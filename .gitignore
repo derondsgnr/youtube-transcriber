@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.DS_Store
+output/
+tmp/
+*.wav
+*.mp3
+*.m4a
+*.webm
+*.part
+*.vtt
+*.srt
