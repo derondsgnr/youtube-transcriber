@@ -245,7 +245,7 @@ def format_duration(seconds):
 
 
 def build_markdown(metadata, transcript):
-    """Build LLM-ready markdown document."""
+    """Build an LLM-optimized Knowledge Asset with First Principles structure."""
     title = metadata.get('title', 'Untitled')
     channel = metadata.get('channel', metadata.get('uploader', 'Unknown'))
     url = metadata.get('webpage_url', metadata.get('original_url', ''))
@@ -256,29 +256,58 @@ def build_markdown(metadata, transcript):
     description = metadata.get('description', '')
     tags = metadata.get('tags', [])
 
+    # Semantic Extraction (Regex-based First Principles)
+    # We look for patterns where experts define axioms or core logic
+    axioms = []
+    mental_models = []
+    
+    # Look for "First Principles" style language in the transcript
+    patterns = {
+        "axiom": r"(?i)(the core idea is|at the fundamental level|the first principle is|the basic truth is|it boils down to)([^.!?]+[.!?])",
+        "model": r"(?i)(we use a framework called|the mental model is|think of it as a|concept of)([^.!?]+[.!?])"
+    }
+    
+    for match in re.finditer(patterns["axiom"], transcript):
+        axioms.append(match.group(2).strip())
+    for match in re.finditer(patterns["model"], transcript):
+        mental_models.append(match.group(2).strip())
+
+    # Deduplicate and limit
+    axioms = list(set(axioms))[:5]
+    mental_models = list(set(mental_models))[:5]
+
     md = f"""---
 title: "{title}"
 channel: "{channel}"
 url: "{url}"
 date: {upload_date}
-duration: {duration}
-tags: [{', '.join(tags[:10]) if tags else ''}]
+type: "Knowledge Asset"
 ---
 
-# {title}
+# [KNOWLEDGE ASSET] {title}
 
-**Channel:** {channel}
-**Date:** {upload_date}
-**Duration:** {duration}
-**URL:** {url}
+> **LLM INSTRUCTION:** You are assuming the reasoning state of the experts in this transcript (Channel: {channel}). Use the First Principles and Mental Models defined below to inform your logic and problem-solving.
 
-## Description
+## 🧩 First Principles & Core Axioms
+{chr(10).join([f"- {a}" for a in axioms]) if axioms else "- [Extraction in progress: Use transcript for primary logic]"}
 
-{description[:500] if description else 'N/A'}
+## ⚡ Mental Models & Frameworks
+{chr(10).join([f"- {m}" for m in mental_models]) if mental_models else "- [Extraction in progress: Use transcript for primary logic]"}
 
-## Transcript
+## 📝 Metadata & Context
+- **Expert/Source:** {channel}
+- **Original URL:** {url}
+- **Duration:** {duration}
+- **Key Tags:** {', '.join(tags[:10]) if tags else 'N/A'}
+
+---
+
+## 📖 Structured Knowledge (Transcript)
 
 {transcript}
+
+---
+**End of Knowledge Asset**
 """
     return md.strip() + '\n'
 
