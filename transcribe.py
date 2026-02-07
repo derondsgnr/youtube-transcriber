@@ -283,23 +283,28 @@ tags: [{', '.join(tags[:10]) if tags else ''}]
     return md.strip() + '\n'
 
 
-def process_video(url, output_dir, force_whisper=False, model_size='base'):
+def process_video(url, output_dir, force_whisper=False, model_size='base', log_callback=None):
     """Process a single video: get metadata, get transcript, write markdown."""
-    print(f"\n  Fetching metadata...")
+    def log(msg):
+        print(f"  {msg}")
+        if log_callback:
+            log_callback(msg)
+
+    log(f"Fetching metadata...")
     metadata = get_video_metadata(url)
     if not metadata:
-        print(f"  [!] Could not fetch metadata for {url}")
+        log(f"[!] Could not fetch metadata for {url}")
         return False
 
     title = metadata.get('title', 'Untitled')
     channel = metadata.get('channel', metadata.get('uploader', 'Unknown'))
-    print(f"  Title: {title}")
-    print(f"  Channel: {channel}")
+    log(f"Title: {title}")
+    log(f"Channel: {channel}")
 
     # Determine Topic (Layer A)
     topics = load_topics()
     topic = get_topic_for_channel(channel, topics)
-    print(f"  Categorized as: {topic}")
+    log(f"Categorized as: {topic}")
 
     # Create nested directory: output/Topic/Channel/
     channel_dir = Path(output_dir) / sanitize_filename(topic) / sanitize_filename(channel)
@@ -308,29 +313,29 @@ def process_video(url, output_dir, force_whisper=False, model_size='base'):
     # Check if already processed
     out_file = channel_dir / f"{sanitize_filename(title)}.md"
     if out_file.exists():
-        print(f"  [skip] Already exists: {out_file}")
+        log(f"[skip] Already exists: {out_file}")
         return True
 
     # Get transcript
     transcript = None
     if not force_whisper:
-        print(f"  Pulling YouTube subtitles...")
+        log(f"Pulling YouTube subtitles...")
         transcript = fetch_youtube_subtitles(url)
         if transcript:
-            print(f"  Got subtitles ({len(transcript)} chars)")
+            log(f"Got subtitles ({len(transcript)} chars)")
 
     if not transcript:
-        print(f"  No YouTube subtitles. Trying Whisper...")
+        log(f"No YouTube subtitles. Trying Whisper...")
         transcript = whisper_transcribe(url, model_size)
 
     if not transcript:
-        print(f"  [!] No transcript available for: {title}")
+        log(f"[!] No transcript available for: {title}")
         return False
 
     # Build and write markdown
     md = build_markdown(metadata, transcript)
     out_file.write_text(md, encoding='utf-8')
-    print(f"  Saved: {out_file}")
+    log(f"Saved: {out_file}")
     return True
 
 

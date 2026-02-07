@@ -1,0 +1,43 @@
+## Cursor Efficiency Rules
+
+### How to Edit
+- Use surgical edits: replace_line or str_replace for small changes
+- Only rewrite full files for new files or &gt;30% changes
+- Search silently, edit immediately, report briefly
+
+### For Non-Technical Users
+- I describe problems in plain English
+- You locate the code, make minimal changes
+- Tell me: "Fixed [file]: [before] → [after]"
+
+### Skip These
+- No full file previews before editing
+- No waiting for confirmation on simple changes
+- No explanations unless I ask
+
+### Safety
+- If unsure which location, ask briefly
+- If change affects &gt;3 files, list them first
+
+## Cursor Efficiency System
+
+### PRE-EDIT HOOK
+Before editing:
+- Search: find relevant code using my plain English description
+- View: load only ±5 lines around target
+- Decide: surgical edit or ask for clarity
+
+### EDIT EXECUTION
+- Single line change → replace_line
+- Multi-line block → str_replace with exact match
+- New file only → create
+
+### POST-EDIT HOOK
+After editing:
+- Confirm change applied
+- Report in one line: "[file] line [X]: [change summary]"
+
+### ERROR HOOK
+If edit fails or unsure:
+- Explain why briefly
+- Offer 2 options: "Try A or B?"

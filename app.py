@@ -1,106 +1,185 @@
 import streamlit as st
 import os
 import json
+import subprocess
 from pathlib import Path
 import transcribe
 from datetime import datetime
 
 st.set_page_config(page_title="YouTube Transcriber", page_icon="📺", layout="wide")
 
+# Custom CSS for a better look
+st.markdown("""
+    <style>
+    .stProgress > div > div > div > div {
+        background-color: #ef4444;
+    }
+    .log-container {
+        background-color: #1e1e1e;
+        color: #00ff00;
+        padding: 10px;
+        border-radius: 5px;
+        font-family: monospace;
+        height: 200px;
+        overflow-y: auto;
+        font-size: 0.8rem;
+        margin-bottom: 10px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+def play_success_sound():
+    try:
+        # macOS native sound
+        subprocess.run(["afplay", "/System/Library/Sounds/Glass.aiff"])
+    except:
+        pass
+
+def get_all_transcripts():
+    output_path = Path("./output")
+    transcripts = []
+    if output_path.exists():
+        for md_file in output_path.glob("**/*.md"):
+            transcripts.append({
+                "path": md_file,
+                "name": md_file.stem,
+                "topic": md_file.parent.parent.name,
+                "channel": md_file.parent.name,
+                "mtime": md_file.stat().st_mtime
+            })
+    return sorted(transcripts, key=lambda x: x['mtime'], reverse=True)
+
+# --- APP LAYOUT ---
 st.title("📺 YouTube Transcriber")
-st.markdown("Download, transcribe, and organize YouTube videos for your LLM knowledge base.")
 
-# Sidebar for Topic Management
-with st.sidebar:
-    st.header("Topic Management")
-    topics = transcribe.load_topics()
-    
-    new_topic = st.text_input("Add New Topic")
-    if st.button("Create Topic") and new_topic:
-        if new_topic not in topics:
-            topics[new_topic] = []
-            with open('topics.json', 'w') as f:
-                json.dump(topics, f, indent=2)
-            st.success(f"Topic '{new_topic}' added!")
-            st.rerun()
+tab1, tab2, tab3 = st.tabs(["🚀 Transcribe", "📚 Library", "⚙️ Topics"])
 
-    st.divider()
-    st.subheader("Current Mappings")
-    for topic, channels in topics.items():
-        with st.expander(f"{topic} ({len(channels)})"):
-            for channel in channels:
-                st.text(f"• {channel}")
-            
-            chan_to_add = st.text_input(f"Add channel to {topic}", key=f"add_{topic}")
-            if st.button("Add", key=f"btn_{topic}"):
-                if chan_to_add and chan_to_add not in topics[topic]:
-                    topics[topic].append(chan_to_add)
-                    with open('topics.json', 'w') as f:
-                        json.dump(topics, f, indent=2)
-                    st.success(f"Added {chan_to_add}")
-                    st.rerun()
+# --- TAB 1: TRANSCRIBE ---
+with tab1:
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.subheader("New Transcription")
+        url = st.text_input("YouTube URL", placeholder="Video, Playlist, or Channel URL")
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            limit = st.number_input("Limit videos", min_value=1, value=5)
+        with c2:
+            model = st.selectbox("Whisper Model", ["tiny", "base", "small", "medium"], index=1)
+        
+        force_whisper = st.checkbox("Force local Whisper (slower, but works if auto-subs fail)")
+        
+        if st.button("🚀 Start Processing", type="primary", use_container_width=True):
+            if not url:
+                st.error("Please enter a URL")
+            else:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                log_container = st.empty()
+                logs = []
 
-# Main Interface
-col1, col2 = st.columns([2, 1])
+                def update_logs(msg):
+                    logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+                    log_container.markdown(f'<div class="log-container">{"<br>".join(logs[::-1])}</div>', unsafe_allow_html=True)
 
-with col1:
-    st.subheader("Transcribe New Content")
-    url = st.text_input("YouTube URL", placeholder="Video, Playlist, or Channel URL")
-    
-    c1, c2 = st.columns(2)
-    with c1:
-        limit = st.number_input("Limit videos (for playlists/channels)", min_value=1, value=5)
-    with c2:
-        model = st.selectbox("Whisper Model (Fallback)", ["tiny", "base", "small", "medium"], index=1)
-    
-    force_whisper = st.checkbox("Force local Whisper transcription")
-    
-    if st.button("🚀 Start Processing", type="primary"):
-        if not url:
-            st.error("Please enter a URL")
-        else:
-            output_area = st.empty()
-            log_area = st.empty()
-            
-            with st.status("Processing...", expanded=True) as status:
-                # Determine if single video or collection
-                is_single = 'watch?v=' in url or 'youtu.be/' in url or 'shorts/' in url
-                
-                if is_single:
-                    videos = [{'url': url, 'title': '', 'id': ''}]
-                else:
-                    st.write("🔍 Fetching video list...")
-                    videos = transcribe.get_video_list(url, limit)
-                
-                if not videos:
-                    st.error("No videos found.")
-                else:
-                    success_count = 0
-                    for i, vid in enumerate(videos):
-                        st.write(f"Processing [{i+1}/{len(videos)}]: {vid.get('title', vid['url'])}")
-                        try:
-                            # We'll call the process_video function from transcribe.py
-                            # Note: In a real app, we'd want to capture stdout, but for now we just run it
-                            ok = transcribe.process_video(vid['url'], './output', force_whisper, model)
+                with st.status("Working...", expanded=True) as status:
+                    update_logs("🔍 Analyzing URL...")
+                    is_single = 'watch?v=' in url or 'youtu.be/' in url or 'shorts/' in url
+                    
+                    if is_single:
+                        videos = [{'url': url, 'title': '', 'id': ''}]
+                    else:
+                        videos = transcribe.get_video_list(url, limit)
+                    
+                    if not videos:
+                        st.error("No videos found.")
+                    else:
+                        success_count = 0
+                        for i, vid in enumerate(videos):
+                            current_title = vid.get('title', 'Video')
+                            status_text.markdown(f"**Processing {i+1}/{len(videos)}:** {current_title}")
+                            progress_bar.progress((i) / len(videos))
+                            
+                            update_logs(f"Starting: {current_title}")
+                            
+                            ok = transcribe.process_video(
+                                vid['url'], 
+                                './output', 
+                                force_whisper, 
+                                model,
+                                log_callback=update_logs
+                            )
                             if ok:
                                 success_count += 1
-                        except Exception as e:
-                            st.error(f"Error: {e}")
-                    
-                    status.update(label=f"Finished! {success_count}/{len(videos)} videos processed.", state="complete")
-                    st.balloons()
+                        
+                        progress_bar.progress(1.0)
+                        status.update(label=f"Finished! {success_count}/{len(videos)} processed.", state="complete")
+                        play_success_sound()
+                        st.balloons()
 
-with col2:
-    st.subheader("Recent Outputs")
-    output_path = Path("./output")
-    if output_path.exists():
-        for topic_dir in sorted(output_path.iterdir()):
-            if topic_dir.is_dir():
-                with st.expander(f"📁 {topic_dir.name}"):
-                    for channel_dir in sorted(topic_dir.iterdir()):
-                        if channel_dir.is_dir():
-                            st.markdown(f"**{channel_dir.name}**")
-                            for md_file in sorted(channel_dir.glob("*.md")):
-                                st.text(f"📄 {md_file.name}")
+    with col2:
+        st.subheader("Quick Stats")
+        all_ts = get_all_transcripts()
+        st.metric("Total Transcripts", len(all_ts))
+        
+        if all_ts:
+            st.write("**Latest Additions:**")
+            for ts in all_ts[:5]:
+                st.caption(f"• {ts['name'][:40]}...")
+
+# --- TAB 2: LIBRARY ---
+with tab2:
+    st.subheader("Browse Your Transcripts")
+    all_ts = get_all_transcripts()
+    
+    if not all_ts:
+        st.info("Your library is empty. Start transcribing to see files here.")
     else:
-        st.info("No outputs yet. Start transcribing to see files here.")
+        # Search and Filter
+        search = st.text_input("🔍 Search transcripts...", "")
+        
+        filtered = [t for t in all_ts if search.lower() in t['name'].lower() or search.lower() in t['channel'].lower()]
+        
+        for ts in filtered:
+            with st.expander(f"📄 {ts['topic']} / {ts['channel']} / {ts['name']}"):
+                col_a, col_b = st.columns([4, 1])
+                with col_b:
+                    if st.button("📋 Copy", key=f"copy_{ts['path']}"):
+                        st.write("Copied! (Simulated)") # Streamlit doesn't have native clipboard yet
+                
+                content = ts['path'].read_text()
+                st.markdown(content)
+
+# --- TAB 3: TOPICS ---
+with tab3:
+    st.subheader("Manage Topics & Channels")
+    topics = transcribe.load_topics()
+    
+    col_t1, col_t2 = st.columns(2)
+    
+    with col_t1:
+        new_topic = st.text_input("Add New Topic")
+        if st.button("Create Topic") and new_topic:
+            if new_topic not in topics:
+                topics[new_topic] = []
+                with open('topics.json', 'w') as f:
+                    json.dump(topics, f, indent=2)
+                st.success(f"Topic '{new_topic}' added!")
+                st.rerun()
+
+    with col_t2:
+        st.write("**Current Mappings**")
+        for topic, channels in topics.items():
+            with st.expander(f"📁 {topic} ({len(channels)} channels)"):
+                for chan in channels:
+                    st.text(f"• {chan}")
+                
+                c_add = st.text_input(f"Add channel to {topic}", key=f"add_chan_{topic}")
+                if st.button("Add", key=f"btn_add_{topic}"):
+                    if c_add and c_add not in topics[topic]:
+                        topics[topic].append(c_add)
+                        with open('topics.json', 'w') as f:
+                            json.dump(topics, f, indent=2)
+                        st.success(f"Added {c_add}")
+                        st.rerun()
