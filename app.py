@@ -1,45 +1,266 @@
-import streamlit as st
 import json
+import os
 import subprocess
-from pathlib import Path
-import transcribe
+import sys
 from datetime import datetime
+from pathlib import Path
 
-st.set_page_config(page_title="YouTube Transcriber", page_icon="📺", layout="wide")
+import streamlit as st
 
-st.markdown(
-    """
-    <style>
-    .stProgress > div > div > div > div { background-color: #ef4444; }
-    .log-container {
-        background-color: #1e1e1e;
-        color: #00ff00;
-        padding: 10px;
-        border-radius: 5px;
-        font-family: monospace;
-        height: 240px;
-        overflow-y: auto;
-        font-size: 0.8rem;
-        margin-bottom: 10px;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
+import transcribe
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+OUTPUT_DIR = PROJECT_ROOT / "output"
+
+
+def card():
+    """Resend-style bordered panel; falls back on older Streamlit without `border=`."""
+    try:
+        return st.container(border=True)
+    except TypeError:
+        return st.container()
+
+
+st.set_page_config(
+    page_title="Transcriber",
+    page_icon="◆",
+    layout="wide",
 )
+
+
+def inject_styles():
+    st.markdown(
+        """
+<style>
+  :root {
+    --bg: #fafafa;
+    --surface: #ffffff;
+    --text: #0a0a0a;
+    --muted: #737373;
+    --border: #e5e5e5;
+    --ring: rgba(10, 10, 10, 0.08);
+    --shadow: 0 1px 2px rgba(10, 10, 10, 0.04), 0 8px 24px rgba(10, 10, 10, 0.06);
+    --radius: 10px;
+    --radius-sm: 8px;
+    --font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+      Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  .stApp { background: var(--bg); font-family: var(--font); color: var(--text); }
+  #MainMenu { visibility: hidden; }
+  footer { visibility: hidden; }
+  header[data-testid="stHeader"] { background: transparent; border-bottom: 1px solid var(--border); }
+  .block-container { padding-top: 2rem !important; padding-bottom: 4rem !important; max-width: 1080px !important; }
+
+  .yt-hero {
+    padding: 0 0 1.5rem 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 1.75rem;
+  }
+  .yt-kicker {
+    font-size: 0.75rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    margin: 0 0 0.5rem 0;
+  }
+  .yt-title {
+    font-size: 1.75rem;
+    font-weight: 600;
+    letter-spacing: -0.03em;
+    line-height: 1.15;
+    margin: 0 0 0.5rem 0;
+    color: var(--text);
+  }
+  .yt-sub {
+    font-size: 0.95rem;
+    color: var(--muted);
+    line-height: 1.55;
+    max-width: 52ch;
+    margin: 0;
+  }
+
+  .yt-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 1.25rem 1.35rem;
+    margin-bottom: 1rem;
+  }
+  .yt-card h3 {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--text);
+    margin: 0 0 1rem 0;
+  }
+
+  .yt-log {
+    background: #0a0a0a;
+    color: #e5e5e5;
+    border-radius: var(--radius-sm);
+    padding: 1rem 1.1rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.78rem;
+    line-height: 1.45;
+    max-height: 260px;
+    overflow-y: auto;
+    border: 1px solid #262626;
+  }
+
+  div[data-testid="stTabs"] { margin-top: 0.25rem; }
+  div[data-testid="stTabs"] [data-baseweb="tab-list"] {
+    gap: 0.25rem;
+    background: transparent;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0;
+  }
+  div[data-testid="stTabs"] button[data-baseweb="tab"] {
+    border-radius: 8px 8px 0 0;
+    padding: 0.55rem 0.9rem;
+    font-weight: 500;
+    font-size: 0.9rem;
+    color: var(--muted);
+    border: none;
+    background: transparent;
+  }
+  div[data-testid="stTabs"] button[data-baseweb="tab"][aria-selected="true"] {
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-bottom-color: var(--surface);
+    margin-bottom: -1px;
+  }
+
+  div[data-testid="stVerticalBlock"] > div > div[data-testid="stMarkdownContainer"] p {
+    line-height: 1.55;
+  }
+
+  .stTextInput label, .stNumberInput label, .stSelectbox label, .stCheckbox label {
+    font-size: 0.8125rem !important;
+    font-weight: 500 !important;
+    color: var(--text) !important;
+  }
+  div[data-baseweb="input"] > div {
+    border-radius: var(--radius-sm) !important;
+    border-color: var(--border) !important;
+    background: var(--surface) !important;
+  }
+  div[data-baseweb="select"] > div {
+    border-radius: var(--radius-sm) !important;
+    border-color: var(--border) !important;
+  }
+
+  div[data-testid="stButton"] > button {
+    border-radius: var(--radius-sm) !important;
+    font-weight: 500 !important;
+    font-size: 0.9rem !important;
+    padding: 0.5rem 1rem !important;
+    border: 1px solid var(--border) !important;
+    background: var(--surface) !important;
+    color: var(--text) !important;
+    transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  div[data-testid="stButton"] > button:hover {
+    border-color: #d4d4d4 !important;
+    box-shadow: 0 1px 2px rgba(10,10,10,0.06) !important;
+  }
+  div[data-testid="stButton"] > button[kind="primary"] {
+    background: #171717 !important;
+    color: #fafafa !important;
+    border-color: #171717 !important;
+  }
+  div[data-testid="stButton"] > button[kind="primary"]:hover {
+    background: #262626 !important;
+    border-color: #262626 !important;
+  }
+
+  div[data-testid="stMetric"] {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.85rem 1rem;
+    box-shadow: 0 1px 2px rgba(10,10,10,0.04);
+  }
+  div[data-testid="stMetric"] label { color: var(--muted) !important; font-size: 0.75rem !important; }
+  div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+    font-size: 1.35rem !important;
+    font-weight: 600 !important;
+    letter-spacing: -0.02em;
+  }
+
+  [data-testid="stExpander"] {
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-sm) !important;
+    background: var(--surface) !important;
+    box-shadow: 0 1px 2px rgba(10,10,10,0.03);
+  }
+  [data-testid="stExpander"] summary {
+    font-weight: 500 !important;
+    font-size: 0.9rem !important;
+  }
+
+  [data-testid="stStatus"] {
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-sm) !important;
+    background: var(--surface) !important;
+  }
+
+  .stProgress > div > div > div > div {
+    background: #171717 !important;
+    border-radius: 999px;
+  }
+
+  div[data-testid="stAlert"] {
+    border-radius: var(--radius-sm) !important;
+    border: 1px solid var(--border) !important;
+  }
+
+  [data-testid="stSidebar"] {
+    border-right: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  iframe[title="streamlit dataframe"] { border-radius: var(--radius-sm) !important; }
+
+  div[data-testid="stVerticalBlockBorderWrapper"] {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius) !important;
+    box-shadow: var(--shadow) !important;
+    padding: 1.25rem 1.35rem !important;
+    margin-bottom: 1rem !important;
+  }
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def play_success_sound():
     try:
-        subprocess.run(["afplay", "/System/Library/Sounds/Glass.aiff"], check=False)
+        subprocess.run(
+            ["afplay", "/System/Library/Sounds/Glass.aiff"], check=False
+        )
     except Exception:
         pass
 
 
+def open_in_finder(path: Path):
+    if sys.platform == "darwin":
+        subprocess.run(["open", str(path)], check=False)
+    elif sys.platform == "win32":
+        os.startfile(str(path))  # noqa: S606
+    else:
+        subprocess.run(["xdg-open", str(path)], check=False)
+
+
 def get_all_transcripts():
-    output_path = Path("./output")
     transcripts = []
-    if output_path.exists():
-        for md_file in output_path.glob("**/*.md"):
+    if OUTPUT_DIR.exists():
+        for md_file in OUTPUT_DIR.glob("**/*.md"):
             transcripts.append(
                 {
                     "path": md_file,
@@ -52,85 +273,127 @@ def get_all_transcripts():
     return sorted(transcripts, key=lambda x: x["mtime"], reverse=True)
 
 
-st.title("📺 YouTube Transcriber")
+inject_styles()
+
+with st.sidebar:
+    st.markdown(
+        '<p class="yt-kicker" style="margin-top:0">Workspace</p>',
+        unsafe_allow_html=True,
+    )
+    st.markdown("**Transcriber**")
+    st.caption("Runs locally · no API keys for capture")
+
+    st.divider()
+
+    if st.button("Open output folder", use_container_width=True):
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        open_in_finder(OUTPUT_DIR)
+
+    if st.button("Open project folder", use_container_width=True):
+        open_in_finder(PROJECT_ROOT)
+
+    st.caption(
+        f"Output: `{OUTPUT_DIR.relative_to(PROJECT_ROOT)}` — Markdown files appear here automatically."
+    )
+
+st.markdown(
+    """
+<div class="yt-hero">
+  <p class="yt-kicker">Local · LLM-ready</p>
+  <h1 class="yt-title">Turn YouTube into knowledge</h1>
+  <p class="yt-sub">Paste a link, pull subtitles or Whisper, and save structured markdown—organized by topic—without touching the terminal for day-to-day use.</p>
+</div>
+""",
+    unsafe_allow_html=True,
+)
 
 tab1, tab2, tab3, tab4 = st.tabs(
-    ["🚀 Transcribe", "📚 Library", "⚙️ Topics", "🔧 Diagnostics & catch-up"]
+    ["Transcribe", "Library", "Topics", "System"]
 )
 
 with tab1:
-    col1, col2 = st.columns([2, 1])
+    col_main, col_side = st.columns([1.65, 1], gap="large")
 
-    with col1:
-        st.subheader("New transcription")
-        url = st.text_input(
-            "YouTube URL", placeholder="Video, playlist, or channel URL"
-        )
+    with col_main:
+        with card():
+            st.markdown("### New job")
+            url = st.text_input(
+                "YouTube URL",
+                placeholder="Video, playlist, or channel URL",
+                label_visibility="visible",
+            )
+            r1, r2 = st.columns(2)
+            with r1:
+                limit = st.number_input(
+                    "Max videos", min_value=1, value=5, step=1
+                )
+            with r2:
+                model = st.selectbox(
+                    "Whisper model (fallback)",
+                    ["tiny", "base", "small", "medium"],
+                    index=1,
+                )
+            opt1, opt2 = st.columns(2)
+            with opt1:
+                force_whisper = st.checkbox(
+                    "Force Whisper",
+                    help="Skip YouTube captions and transcribe locally (slower).",
+                )
+            with opt2:
+                force_reprocess = st.checkbox(
+                    "Reprocess saved",
+                    help="Ignore skip rules and overwrite when possible.",
+                )
 
-        c1, c2 = st.columns(2)
-        with c1:
-            limit = st.number_input("Limit videos", min_value=1, value=5)
-        with c2:
-            model = st.selectbox(
-                "Whisper model", ["tiny", "base", "small", "medium"], index=1
+            run = st.button(
+                "Start processing", type="primary", use_container_width=True
             )
 
-        force_whisper = st.checkbox(
-            "Force local Whisper (slower; use if subtitles missing or wrong)"
-        )
-        force_reprocess = st.checkbox(
-            "Reprocess even if already saved (ignore skip / state)"
-        )
-
-        if st.button("🚀 Start processing", type="primary", use_container_width=True):
-            if not url:
-                st.error("Please enter a URL")
+        if run:
+            if not url or not url.strip():
+                st.error("Add a URL to continue.")
             else:
+                url = url.strip()
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 log_container = st.empty()
                 logs = []
 
                 def update_logs(msg):
-                    logs.append(
-                        f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
-                    )
+                    logs.append(f"{datetime.now().strftime('%H:%M:%S')}  {msg}")
                     log_container.markdown(
-                        '<div class="log-container">'
+                        '<div class="yt-log">'
                         + "<br>".join(logs[::-1])
                         + "</div>",
                         unsafe_allow_html=True,
                     )
 
-                with st.status("Working...", expanded=True) as status:
+                with st.status("Running…", expanded=True) as status:
                     update_logs("Analyzing URL…")
                     is_single = (
                         "watch?v=" in url
                         or "youtu.be/" in url
                         or "shorts/" in url
                     )
-
                     if is_single:
                         videos = [{"url": url, "title": "", "id": ""}]
                     else:
                         videos = transcribe.get_video_list(url, limit)
 
                     if not videos:
-                        st.error("No videos found.")
+                        st.error("No videos found for that URL.")
                     else:
                         success_count = 0
                         for i, vid in enumerate(videos):
                             current_title = vid.get("title", "Video")
                             status_text.markdown(
-                                f"**Processing {i+1}/{len(videos)}:** {current_title}"
+                                f"**Step {i + 1} of {len(videos)}** · {current_title}"
                             )
                             progress_bar.progress((i) / max(len(videos), 1))
-
                             update_logs(f"Starting: {current_title}")
-
                             ok = transcribe.process_video(
                                 vid["url"],
-                                "./output",
+                                str(OUTPUT_DIR),
                                 force_whisper,
                                 model,
                                 log_callback=update_logs,
@@ -141,147 +404,186 @@ with tab1:
 
                         progress_bar.progress(1.0)
                         status.update(
-                            label=f"Finished: {success_count}/{len(videos)} processed.",
+                            label=f"Complete · {success_count} of {len(videos)} saved",
                             state="complete",
                         )
                         play_success_sound()
                         st.balloons()
 
-    with col2:
-        st.subheader("Quick stats")
-        all_ts = get_all_transcripts()
-        st.metric("Total transcripts", len(all_ts))
+    with col_side:
+        with card():
+            st.markdown("### At a glance")
+            all_ts = get_all_transcripts()
+            m1, m2 = st.columns(2)
+            with m1:
+                st.metric("Transcripts", len(all_ts))
+            with m2:
+                st.metric("In library DB", len(transcribe.load_state()))
+            if all_ts:
+                st.markdown("**Recent**")
+                for ts in all_ts[:5]:
+                    st.caption(f"{ts['name'][:48]}…")
+            else:
+                st.caption("Nothing yet—run a job to populate your library.")
 
-        processed_n = len(transcribe.load_state())
-        st.metric("Videos in state DB", processed_n)
-
-        if all_ts:
-            st.write("**Latest additions:**")
-            for ts in all_ts[:5]:
-                st.caption(f"• {ts['name'][:40]}…")
+        with card():
+            st.markdown("### Files")
+            st.caption(
+                "Saved as topic → channel → title. Use the sidebar to open the folder."
+            )
 
 with tab2:
-    st.subheader("Browse your transcripts")
-    all_ts = get_all_transcripts()
-
-    if not all_ts:
-        st.info("Your library is empty. Start transcribing to see files here.")
-    else:
-        search = st.text_input("Search transcripts…", "")
-        filtered = [
-            t
-            for t in all_ts
-            if search.lower() in t["name"].lower()
-            or search.lower() in t["channel"].lower()
-        ]
-
-        for ts in filtered:
-            with st.expander(f"📄 {ts['topic']} / {ts['channel']} / {ts['name']}"):
-                content = ts["path"].read_text(encoding="utf-8")
-                st.markdown(content)
+    with card():
+        st.markdown("### Library")
+        all_ts = get_all_transcripts()
+        if not all_ts:
+            st.info("No transcripts yet. Run a job on the Transcribe tab.")
+        else:
+            search = st.text_input(
+                "Search", placeholder="Filter by title or channel…"
+            )
+            q = (search or "").lower()
+            filtered = (
+                all_ts
+                if not q
+                else [
+                    t
+                    for t in all_ts
+                    if q in t["name"].lower() or q in t["channel"].lower()
+                ]
+            )
+            st.caption(f"{len(filtered)} file(s)")
+            for ts in filtered:
+                title = f"{ts['topic']} · {ts['channel']} · {ts['name']}"
+                with st.expander(title[:120]):
+                    content = ts["path"].read_text(encoding="utf-8")
+                    st.markdown(content)
 
 with tab3:
-    st.subheader("Manage topics & channels")
-    topics = transcribe.load_topics()
-
-    col_t1, col_t2 = st.columns(2)
-
-    with col_t1:
-        new_topic = st.text_input("Add new topic")
-        if st.button("Create topic") and new_topic:
-            if new_topic not in topics:
-                topics[new_topic] = []
-                with open("topics.json", "w", encoding="utf-8") as f:
-                    json.dump(topics, f, indent=2, ensure_ascii=False)
-                st.success(f"Topic “{new_topic}” added.")
-                st.rerun()
-
-    with col_t2:
-        st.write("**Current mappings**")
-        for topic, channels in topics.items():
-            with st.expander(f"📁 {topic} ({len(channels)} channels)"):
-                for chan in channels:
-                    st.text(f"• {chan}")
-
-                c_add = st.text_input(
-                    f"Add channel to {topic}", key=f"add_chan_{topic}"
+    with card():
+        st.markdown("### Topics")
+        st.caption(
+            "Map exact YouTube channel display names to folders. "
+            "Unlisted channels land in **Uncategorized**."
+        )
+        topics = transcribe.load_topics()
+        new_topic = st.text_input("New topic name")
+        if st.button("Add topic", use_container_width=False):
+            nt = (new_topic or "").strip()
+            if nt and nt not in topics:
+                topics[nt] = []
+                (PROJECT_ROOT / "topics.json").write_text(
+                    json.dumps(topics, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
                 )
-                if st.button("Add", key=f"btn_add_{topic}"):
-                    if c_add and c_add not in topics[topic]:
-                        topics[topic].append(c_add)
-                        with open("topics.json", "w", encoding="utf-8") as f:
-                            json.dump(topics, f, indent=2, ensure_ascii=False)
-                        st.success(f"Added {c_add}")
+                st.success("Topic added.")
+                st.rerun()
+            elif not nt:
+                st.warning("Enter a topic name.")
+
+        for topic_name, channels in sorted(topics.items()):
+            with st.expander(f"{topic_name} · {len(channels)} channels"):
+                for chan in channels:
+                    st.text(chan)
+                add_key = f"add_{topic_name}".replace(" ", "_")[:40]
+                c_add = st.text_input(
+                    "Add channel (exact name on YouTube)",
+                    key=add_key,
+                    label_visibility="collapsed",
+                    placeholder=f"Channel display name → {topic_name}",
+                )
+                if st.button("Add to topic", key=f"btn_{add_key}"):
+                    if c_add and c_add not in topics[topic_name]:
+                        topics[topic_name].append(c_add)
+                        (PROJECT_ROOT / "topics.json").write_text(
+                            json.dumps(topics, indent=2, ensure_ascii=False),
+                            encoding="utf-8",
+                        )
                         st.rerun()
 
 with tab4:
-    st.subheader("Environment checks")
-    for row in transcribe.health_check():
-        icon = "✅" if row["ok"] else "❌"
-        st.markdown(f"{icon} **{row['name']}** — `{row['detail']}`")
+    with card():
+        st.markdown("### Environment")
+        for row in transcribe.health_check():
+            icon = "●" if row["ok"] else "○"
+            color = "#171717" if row["ok"] else "#b45309"
+            st.markdown(
+                f'<p style="margin:0.35rem 0;font-size:0.9rem;color:{color}">'
+                f"<strong>{icon}</strong> &nbsp;{row['name']} — "
+                f'<span style="color:#737373">{row["detail"]}</span></p>',
+                unsafe_allow_html=True,
+            )
 
-    st.divider()
-    st.subheader("Catch up: new videos on a channel or playlist")
-    st.caption(
-        "Paste a channel (`@handle` or `/channel/…`) or playlist URL. "
-        "Lists recent uploads and whether each video ID is already in `state/processed.json`."
-    )
-    catch_url = st.text_input("Channel or playlist URL", key="catch_url")
-    catch_limit = st.number_input("How many recent to list", min_value=1, value=15)
-
-    if st.button("List recent videos"):
-        if not catch_url.strip():
-            st.warning("Enter a URL first.")
-        else:
-            with st.spinner("Fetching…"):
-                try:
-                    st.session_state["catch_list"] = transcribe.list_unprocessed_videos(
-                        catch_url.strip(), int(catch_limit)
-                    )
-                except Exception as e:
-                    st.error(str(e))
-
-    rows = st.session_state.get("catch_list") or []
-    if rows:
-        st.dataframe(
-            [
-                {
-                    "New?": "no" if r["processed"] else "yes",
-                    "Title": (r.get("title") or "")[:100],
-                    "Video ID": r.get("id") or "",
-                }
-                for r in rows
-            ],
-            use_container_width=True,
-            hide_index=True,
+    with card():
+        st.markdown("### Catch up on a channel or playlist")
+        st.caption(
+            "List recent uploads and transcribe one that is not in your library yet."
         )
-        pending = [r for r in rows if not r["processed"] and r.get("url")]
-        if pending:
-            labels = [f"{r.get('title', '')[:70]}… ({r.get('id', '')})" for r in pending]
-            pick = st.selectbox("Transcribe one new video", range(len(pending)), format_func=lambda i: labels[i])
-            whisper_model = st.selectbox("Whisper model (fallback)", ["tiny", "base", "small"], index=1, key="catch_whisper")
-            log_box = st.empty()
-            if st.button("Run transcription for selection"):
-                def log_cb(msg):
-                    log_box.code(msg)
+        catch_url = st.text_input("Channel or playlist URL", key="catch_url")
+        catch_limit = st.number_input("How many recent", min_value=1, value=15)
 
-                ok = transcribe.process_video(
-                    pending[pick]["url"],
-                    "./output",
-                    False,
-                    whisper_model,
-                    log_callback=log_cb,
-                    force=False,
+        if st.button("List recent videos"):
+            if not catch_url or not str(catch_url).strip():
+                st.warning("Enter a URL first.")
+            else:
+                with st.spinner("Fetching…"):
+                    try:
+                        st.session_state["catch_list"] = (
+                            transcribe.list_unprocessed_videos(
+                                str(catch_url).strip(), int(catch_limit)
+                            )
+                        )
+                    except Exception as e:
+                        st.error(str(e))
+
+        rows = st.session_state.get("catch_list") or []
+        if rows:
+            st.dataframe(
+                [
+                    {
+                        "New": "No" if r["processed"] else "Yes",
+                        "Title": (r.get("title") or "")[:120],
+                        "ID": r.get("id") or "",
+                    }
+                    for r in rows
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+            pending = [r for r in rows if not r["processed"] and r.get("url")]
+            if pending:
+                labels = [
+                    f"{(r.get('title') or '')[:65]}… ({r.get('id', '')})"
+                    for r in pending
+                ]
+                pick = st.selectbox(
+                    "Choose a video",
+                    range(len(pending)),
+                    format_func=lambda i: labels[i],
                 )
-                if ok:
-                    st.success("Done.")
-                    play_success_sound()
-                    st.session_state["catch_list"] = None
-                    st.rerun()
-                else:
-                    st.error("Failed — see log above.")
+                whisper_model = st.selectbox(
+                    "Whisper model (fallback)",
+                    ["tiny", "base", "small"],
+                    index=1,
+                    key="catch_whisper",
+                )
+                log_box = st.empty()
+                if st.button("Transcribe selection", type="primary"):
+                    def log_cb(msg):
+                        log_box.code(msg)
 
-    st.caption(
-        "Transcripts: `output/<Topic>/<Channel>/<Title>.md`. "
-        "Optional: copy `config.example.json` → `config.json` to tweak defaults."
-    )
+                    ok = transcribe.process_video(
+                        pending[pick]["url"],
+                        str(OUTPUT_DIR),
+                        False,
+                        whisper_model,
+                        log_callback=log_cb,
+                        force=False,
+                    )
+                    if ok:
+                        st.success("Saved to your library.")
+                        play_success_sound()
+                        st.session_state["catch_list"] = None
+                        st.rerun()
+                    else:
+                        st.error("Could not complete. See log above.")
