@@ -236,6 +236,16 @@ def inject_styles():
     padding: 1.25rem 1.35rem !important;
     margin-bottom: 1rem !important;
   }
+
+  div[data-testid="stDialog"] > div {
+    border-radius: var(--radius) !important;
+    border: 1px solid var(--border) !important;
+    box-shadow: 0 25px 50px -12px rgba(10, 10, 10, 0.2) !important;
+    background: var(--surface) !important;
+  }
+  div[data-testid="stModal"] {
+    backdrop-filter: blur(4px);
+  }
 </style>
         """,
         unsafe_allow_html=True,
@@ -349,6 +359,84 @@ def run_transcription_pipeline(
         st.balloons()
 
 
+@st.dialog("Map this channel")
+def map_channel_modal(pm: dict):
+    """Modal: assign YouTube channel to a topic, then auto-run the pending job."""
+    st.markdown(
+        f"**{pm['channel']}** isn’t in any topic yet. "
+        "Choose where to file it — we’ll save `topics.json` and start the job."
+    )
+    topics_dict = transcribe.load_topics()
+    topic_names = sorted(topics_dict.keys())
+    map_mode = st.radio(
+        "How do you want to map it?",
+        ["Add to existing topic", "Create new topic"],
+        horizontal=True,
+        key="modal_map_mode",
+    )
+    target_topic = None
+    new_topic_txt = ""
+    if map_mode == "Add to existing topic":
+        if topic_names:
+            target_topic = st.selectbox(
+                "Topic folder",
+                topic_names,
+                key="modal_map_select",
+            )
+        else:
+            st.info("No topics yet — use **Create new topic**.")
+    else:
+        new_topic_txt = st.text_input(
+            "New topic name",
+            placeholder="e.g. DevOps, Product strategy",
+            key="modal_map_new",
+        )
+
+    b1, b2 = st.columns(2)
+    with b1:
+        save_run = st.button(
+            "Save & run job",
+            type="primary",
+            use_container_width=True,
+            key="modal_save_run",
+        )
+    with b2:
+        dismiss = st.button("Cancel", use_container_width=True, key="modal_dismiss")
+
+    if dismiss:
+        st.session_state.pop("pending_topic_map", None)
+        st.rerun()
+
+    if save_run:
+        ch = pm["channel"]
+        t = dict(transcribe.load_topics())
+        if map_mode == "Create new topic":
+            nt = (new_topic_txt or "").strip()
+            if not nt:
+                st.error("Enter a name for the new topic.")
+            else:
+                if nt not in t:
+                    t[nt] = []
+                if ch not in t[nt]:
+                    t[nt].append(ch)
+                save_topics_dict(t)
+                st.session_state.pop("pending_topic_map", None)
+                st.session_state["auto_run_job"] = pm
+                st.rerun()
+        else:
+            if not topic_names:
+                st.error("Create a topic first (use **Create new topic**).")
+            elif not target_topic:
+                st.error("Select a topic folder.")
+            else:
+                if ch not in t[target_topic]:
+                    t[target_topic].append(ch)
+                save_topics_dict(t)
+                st.session_state.pop("pending_topic_map", None)
+                st.session_state["auto_run_job"] = pm
+                st.rerun()
+
+
 inject_styles()
 
 with st.sidebar:
@@ -401,6 +489,9 @@ tab1, tab2, tab3, tab4 = st.tabs(
 )
 
 with tab1:
+    if st.session_state.get("pending_topic_map"):
+        map_channel_modal(st.session_state["pending_topic_map"])
+
     col_main, col_side = st.columns([1.65, 1], gap="large")
 
     with col_main:
@@ -417,94 +508,11 @@ with tab1:
                 auto_job["force_reprocess"],
             )
 
-        if st.session_state.get("pending_topic_map"):
-            pm = st.session_state["pending_topic_map"]
-            with card():
-                st.markdown("### Map this channel")
-                st.caption(
-                    f"**{pm['channel']}** is not in any topic yet. "
-                    "Choose a folder or create one, then we’ll start the job."
-                )
-                topics_dict = transcribe.load_topics()
-                topic_names = sorted(topics_dict.keys())
-                map_mode = st.radio(
-                    " ",
-                    ["Add to existing topic", "Create new topic"],
-                    horizontal=True,
-                    key="inline_map_mode",
-                    label_visibility="collapsed",
-                )
-                target_topic = None
-                new_topic_txt = ""
-                if map_mode == "Add to existing topic":
-                    if topic_names:
-                        target_topic = st.selectbox(
-                            "Topic folder",
-                            topic_names,
-                            key="inline_map_select",
-                        )
-                    else:
-                        st.info("No topics yet — use **Create new topic** above.")
-                else:
-                    new_topic_txt = st.text_input(
-                        "New topic name",
-                        placeholder="e.g. DevOps, Product strategy",
-                        key="inline_map_new",
-                    )
-
-                b1, b2 = st.columns(2)
-                with b1:
-                    save_run = st.button(
-                        "Save mapping & run job",
-                        type="primary",
-                        use_container_width=True,
-                        key="inline_map_save_run",
-                    )
-                with b2:
-                    dismiss = st.button(
-                        "Dismiss",
-                        use_container_width=True,
-                        key="inline_map_dismiss",
-                    )
-
-                if dismiss:
-                    st.session_state.pop("pending_topic_map", None)
-                    st.rerun()
-
-                if save_run:
-                    ch = pm["channel"]
-                    t = dict(transcribe.load_topics())
-                    if map_mode == "Create new topic":
-                        nt = (new_topic_txt or "").strip()
-                        if not nt:
-                            st.error("Enter a name for the new topic.")
-                        else:
-                            if nt not in t:
-                                t[nt] = []
-                            if ch not in t[nt]:
-                                t[nt].append(ch)
-                            save_topics_dict(t)
-                            st.session_state.pop("pending_topic_map", None)
-                            st.session_state["auto_run_job"] = pm
-                            st.rerun()
-                    else:
-                        if not topic_names:
-                            st.error("Create a topic first (use **Create new topic**).")
-                        elif not target_topic:
-                            st.error("Select a topic folder.")
-                        else:
-                            if ch not in t[target_topic]:
-                                t[target_topic].append(ch)
-                            save_topics_dict(t)
-                            st.session_state.pop("pending_topic_map", None)
-                            st.session_state["auto_run_job"] = pm
-                            st.rerun()
-
         with card():
             st.markdown("### New job")
             st.caption(
                 "Saves to **output / Topic / Channel / title.md**. "
-                "If the channel is new, use **Map this channel** above or the **Topics** tab."
+                "If the channel is new, a **modal** will ask you to pick a topic (or use the **Topics** tab)."
             )
             url = st.text_input(
                 "YouTube URL",
