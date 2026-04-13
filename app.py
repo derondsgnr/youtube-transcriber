@@ -1,7 +1,10 @@
+import hashlib
+import io
 import json
 import os
 import subprocess
 import sys
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -453,9 +456,39 @@ with tab2:
                 ]
             )
             st.caption(f"{len(filtered)} file(s)")
+
+            if filtered:
+                zip_buf = io.BytesIO()
+                with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for ts in filtered:
+                        arc = (
+                            f"{ts['topic']}/{ts['channel']}/{ts['path'].name}"
+                        )
+                        zf.write(ts["path"], arcname=arc)
+                zip_buf.seek(0)
+                st.download_button(
+                    label="Download all shown as ZIP",
+                    data=zip_buf.getvalue(),
+                    file_name="transcripts.zip",
+                    mime="application/zip",
+                    use_container_width=False,
+                    key="download_zip_filtered",
+                )
+
             for ts in filtered:
                 title = f"{ts['topic']} · {ts['channel']} · {ts['name']}"
                 with st.expander(title[:120]):
+                    path_key = hashlib.md5(
+                        str(ts["path"]).encode(), usedforsecurity=False
+                    ).hexdigest()[:20]
+                    st.download_button(
+                        label="Download this file (.md)",
+                        data=ts["path"].read_bytes(),
+                        file_name=ts["path"].name,
+                        mime="text/markdown; charset=utf-8",
+                        key=f"dl_md_{path_key}",
+                        use_container_width=True,
+                    )
                     content = ts["path"].read_text(encoding="utf-8")
                     st.markdown(content)
 
