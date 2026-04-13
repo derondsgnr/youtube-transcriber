@@ -1,87 +1,62 @@
 # YouTube Transcriber
 
-Pull YouTube videos (single, channel, or playlist) → transcribe → output LLM-ready markdown files.
+Pull YouTube videos (single, channel, or playlist) → transcribe → LLM-ready markdown, organized by **topic** (from `topics.json`) and **channel**.
 
-## How It Works
-
-1. **yt-dlp** fetches video metadata and YouTube's own subtitles (auto-generated or manual)
-2. If no subtitles exist, **faster-whisper** transcribes locally on your CPU (optional)
-3. Output: one clean `.md` file per video, organized by channel — ready to drop into any LLM
-
-## Requirements
-
-- Python 3.8+
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — `brew install yt-dlp` or `pip install yt-dlp`
-- [ffmpeg](https://ffmpeg.org/) — `brew install ffmpeg`
-- (Optional) [faster-whisper](https://github.com/SYSTRAN/faster-whisper) — `pip install faster-whisper` (only needed if YouTube subtitles unavailable)
-
-## Usage
+## Setup
 
 ```bash
-# Single video
-python transcribe.py "https://www.youtube.com/watch?v=VIDEO_ID"
-
-# Entire channel (last 20 videos)
-python transcribe.py "https://www.youtube.com/@ChannelName" --limit 20
-
-# Playlist
-python transcribe.py "https://www.youtube.com/playlist?list=PLAYLIST_ID"
-
-# Force local Whisper (when subtitles exist but you want better quality)
-python transcribe.py "https://www.youtube.com/watch?v=VIDEO_ID" --whisper --model small
+cd youtube-transcriber
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
 
-## Output Structure
+Copy optional settings: `cp config.example.json config.json`
+
+## CLI
+
+```bash
+python transcribe.py "https://www.youtube.com/watch?v=VIDEO_ID"
+python transcribe.py "https://www.youtube.com/@ChannelName" --limit 20
+python transcribe.py "URL" --whisper --model small
+python transcribe.py "URL" --force   # reprocess even if already saved
+```
+
+## UI
+
+```bash
+streamlit run app.py
+# or double-click start.command
+```
+
+Tabs: **Transcribe**, **Library**, **Topics**, **Diagnostics & catch-up** (health checks + list new videos on a channel/playlist).
+
+## Output
 
 ```
 output/
-  Channel Name/
-    Video Title.md
-    Another Video.md
-  Other Channel/
-    Some Video.md
+  <Topic>/
+    <Channel>/
+      <Video title>.md
+state/processed.json   # YouTube video IDs already saved (skip / resume)
 ```
 
-Each `.md` file contains YAML frontmatter + clean transcript:
+Markdown includes Knowledge Asset sections, optional **YouTube chapter** TOC, and chapter-bucketed transcript when timed subs or Whisper segments exist.
 
-```markdown
----
-title: "Video Title"
-channel: "Channel Name"
-url: "https://youtube.com/watch?v=..."
-date: 2024-01-15
-duration: 1:23:45
-tags: [tag1, tag2]
----
+## Optional: local enrichment (Ollama)
 
-# Video Title
+If [Ollama](https://ollama.com) is installed and running (`ollama serve`), you can add a second-pass summary/axioms with a local model (e.g. Gemma):
 
-**Channel:** Channel Name
-**Date:** 2024-01-15
-**Duration:** 1:23:45
-
-## Description
-...
-
-## Transcript
-Full clean transcript text here...
+```bash
+ollama pull gemma2:2b
+python ollama_enrich.py "output/Product Strategy/Some Channel/Some Video.md"
 ```
 
-## Plug Into LLMs
+Writes `*.enriched.md` next to the original.
+
+## Plug into LLMs
 
 | Target | How |
 |--------|-----|
-| **Claude Projects** | Upload `.md` files to Project Knowledge |
-| **Cursor Skills** | Copy to `.cursor/skills/` as `SKILL.md` |
-| **NotebookLM** | Upload `.md` files as sources |
-| **ChatGPT** | Upload to conversation or GPT knowledge |
-| **RAG / Vector DB** | Ingest `.md` files directly |
-
-## Options
-
-| Flag | Description |
-|------|-------------|
-| `--limit N` | Max number of videos to process |
-| `--output DIR` | Output directory (default: `./output`) |
-| `--whisper` | Force local Whisper instead of YouTube subs |
-| `--model SIZE` | Whisper model: tiny/base/small/medium/large |
+| Claude Projects / NotebookLM | Upload `.md` files |
+| Cursor | Point rules/skills at `output/...` or copy excerpts into project docs |

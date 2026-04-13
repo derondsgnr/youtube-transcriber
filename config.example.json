@@ -1,0 +1,6 @@
+{
+  "output_dir": "./output",
+  "default_whisper_model": "base",
+  "default_limit": 5,
+  "subtitle_lang_preference": ["en", "en-US", "en-GB"]
+}

@@ -3,6 +3,8 @@ __pycache__/
 .DS_Store
 output/
 tmp/
+state/processed.json
+config.json
 *.wav
 *.mp3
 *.m4a
