@@ -29,7 +29,9 @@ streamlit run app.py
 # or double-click start.command
 ```
 
-Tabs: **Transcribe**, **Library**, **Topics**, **Diagnostics & catch-up** (health checks + list new videos on a channel/playlist).
+Theme: light, Resend-inspired typography and spacing (see `.streamlit/config.toml` + CSS in `app.py`). The sidebar can **open your output folder in Finder** so you rarely need the terminal.
+
+Tabs: **Transcribe**, **Library**, **Topics**, **System** (health + catch-up on new channel/playlist videos).
 
 ## Output
 
