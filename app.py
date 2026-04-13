@@ -276,6 +276,79 @@ def get_all_transcripts():
     return sorted(transcripts, key=lambda x: x["mtime"], reverse=True)
 
 
+TOPICS_PATH = PROJECT_ROOT / "topics.json"
+
+
+def save_topics_dict(topics: dict) -> None:
+    TOPICS_PATH.write_text(
+        json.dumps(topics, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def run_transcription_pipeline(
+    url: str,
+    limit: int,
+    model: str,
+    force_whisper: bool,
+    force_reprocess: bool,
+) -> None:
+    """Run yt-dlp + process loop with progress UI (expects URL already allowed)."""
+    url = url.strip()
+    is_single = (
+        "watch?v=" in url or "youtu.be/" in url or "shorts/" in url
+    )
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    log_container = st.empty()
+    logs = []
+
+    def update_logs(msg):
+        logs.append(f"{datetime.now().strftime('%H:%M:%S')}  {msg}")
+        log_container.markdown(
+            '<div class="yt-log">' + "<br>".join(logs[::-1]) + "</div>",
+            unsafe_allow_html=True,
+        )
+
+    with st.status("Running…", expanded=True) as status:
+        update_logs("Analyzing URL…")
+        if is_single:
+            videos = [{"url": url, "title": "", "id": ""}]
+        else:
+            videos = transcribe.get_video_list(url, limit)
+
+        if not videos:
+            st.error("No videos found for that URL.")
+            return
+
+        success_count = 0
+        for i, vid in enumerate(videos):
+            current_title = vid.get("title", "Video")
+            status_text.markdown(
+                f"**Step {i + 1} of {len(videos)}** · {current_title}"
+            )
+            progress_bar.progress((i) / max(len(videos), 1))
+            update_logs(f"Starting: {current_title}")
+            ok = transcribe.process_video(
+                vid["url"],
+                str(OUTPUT_DIR),
+                force_whisper,
+                model,
+                log_callback=update_logs,
+                force=force_reprocess,
+            )
+            if ok:
+                success_count += 1
+
+        progress_bar.progress(1.0)
+        status.update(
+            label=f"Complete · {success_count} of {len(videos)} saved",
+            state="complete",
+        )
+        play_success_sound()
+        st.balloons()
+
+
 inject_styles()
 
 with st.sidebar:
@@ -331,11 +404,107 @@ with tab1:
     col_main, col_side = st.columns([1.65, 1], gap="large")
 
     with col_main:
+        auto_job = st.session_state.pop("auto_run_job", None)
+        if auto_job:
+            st.success(
+                f"Saved **{auto_job['channel']}** to a topic — running your job…"
+            )
+            run_transcription_pipeline(
+                auto_job["url"],
+                auto_job["limit"],
+                auto_job["model"],
+                auto_job["force_whisper"],
+                auto_job["force_reprocess"],
+            )
+
+        if st.session_state.get("pending_topic_map"):
+            pm = st.session_state["pending_topic_map"]
+            with card():
+                st.markdown("### Map this channel")
+                st.caption(
+                    f"**{pm['channel']}** is not in any topic yet. "
+                    "Choose a folder or create one, then we’ll start the job."
+                )
+                topics_dict = transcribe.load_topics()
+                topic_names = sorted(topics_dict.keys())
+                map_mode = st.radio(
+                    " ",
+                    ["Add to existing topic", "Create new topic"],
+                    horizontal=True,
+                    key="inline_map_mode",
+                    label_visibility="collapsed",
+                )
+                target_topic = None
+                new_topic_txt = ""
+                if map_mode == "Add to existing topic":
+                    if topic_names:
+                        target_topic = st.selectbox(
+                            "Topic folder",
+                            topic_names,
+                            key="inline_map_select",
+                        )
+                    else:
+                        st.info("No topics yet — use **Create new topic** above.")
+                else:
+                    new_topic_txt = st.text_input(
+                        "New topic name",
+                        placeholder="e.g. DevOps, Product strategy",
+                        key="inline_map_new",
+                    )
+
+                b1, b2 = st.columns(2)
+                with b1:
+                    save_run = st.button(
+                        "Save mapping & run job",
+                        type="primary",
+                        use_container_width=True,
+                        key="inline_map_save_run",
+                    )
+                with b2:
+                    dismiss = st.button(
+                        "Dismiss",
+                        use_container_width=True,
+                        key="inline_map_dismiss",
+                    )
+
+                if dismiss:
+                    st.session_state.pop("pending_topic_map", None)
+                    st.rerun()
+
+                if save_run:
+                    ch = pm["channel"]
+                    t = dict(transcribe.load_topics())
+                    if map_mode == "Create new topic":
+                        nt = (new_topic_txt or "").strip()
+                        if not nt:
+                            st.error("Enter a name for the new topic.")
+                        else:
+                            if nt not in t:
+                                t[nt] = []
+                            if ch not in t[nt]:
+                                t[nt].append(ch)
+                            save_topics_dict(t)
+                            st.session_state.pop("pending_topic_map", None)
+                            st.session_state["auto_run_job"] = pm
+                            st.rerun()
+                    else:
+                        if not topic_names:
+                            st.error("Create a topic first (use **Create new topic**).")
+                        elif not target_topic:
+                            st.error("Select a topic folder.")
+                        else:
+                            if ch not in t[target_topic]:
+                                t[target_topic].append(ch)
+                            save_topics_dict(t)
+                            st.session_state.pop("pending_topic_map", None)
+                            st.session_state["auto_run_job"] = pm
+                            st.rerun()
+
         with card():
             st.markdown("### New job")
             st.caption(
                 "Saves to **output / Topic / Channel / title.md**. "
-                "Map channels on the **Topics** tab (exact YouTube display name)."
+                "If the channel is new, use **Map this channel** above or the **Topics** tab."
             )
             url = st.text_input(
                 "YouTube URL",
@@ -386,12 +555,15 @@ with tab1:
                     st.error(prev_err)
                     st.stop()
                 if topic == "Uncategorized" and not allow_uncategorized:
-                    st.error(
-                        f"**{ch}** is not mapped to any topic. "
-                        "Add this exact channel name under **Topics**, "
-                        "or turn on **Allow Uncategorized** in the sidebar."
-                    )
-                    st.stop()
+                    st.session_state["pending_topic_map"] = {
+                        "channel": ch,
+                        "url": url.strip(),
+                        "limit": int(limit),
+                        "model": model,
+                        "force_whisper": force_whisper,
+                        "force_reprocess": force_reprocess,
+                    }
+                    st.rerun()
                 if topic != "Uncategorized":
                     st.success(f"Will save under **{topic}** → **{ch}**")
                 elif allow_uncategorized:
