@@ -299,6 +299,19 @@ with st.sidebar:
         f"Output: `{OUTPUT_DIR.relative_to(PROJECT_ROOT)}` — Markdown files appear here automatically."
     )
 
+    st.divider()
+    st.markdown("**Folders**")
+    st.caption(
+        "Topic = top folder · Channel = subfolder · one `.md` per video. "
+        "You create **topics** on the Topics tab; the app creates folders when you run a job."
+    )
+    allow_uncategorized = st.checkbox(
+        "Allow Uncategorized",
+        value=False,
+        help="When off, transcription will not start if the channel is not listed under any topic.",
+        key="allow_uncategorized",
+    )
+
 st.markdown(
     """
 <div class="yt-hero">
@@ -320,6 +333,10 @@ with tab1:
     with col_main:
         with card():
             st.markdown("### New job")
+            st.caption(
+                "Saves to **output / Topic / Channel / title.md**. "
+                "Map channels on the **Topics** tab (exact YouTube display name)."
+            )
             url = st.text_input(
                 "YouTube URL",
                 placeholder="Video, playlist, or channel URL",
@@ -357,6 +374,31 @@ with tab1:
                 st.error("Add a URL to continue.")
             else:
                 url = url.strip()
+                is_single = (
+                    "watch?v=" in url
+                    or "youtu.be/" in url
+                    or "shorts/" in url
+                )
+                ch, topic, prev_err = transcribe.preview_categorization(
+                    url, is_single, limit
+                )
+                if prev_err:
+                    st.error(prev_err)
+                    st.stop()
+                if topic == "Uncategorized" and not allow_uncategorized:
+                    st.error(
+                        f"**{ch}** is not mapped to any topic. "
+                        "Add this exact channel name under **Topics**, "
+                        "or turn on **Allow Uncategorized** in the sidebar."
+                    )
+                    st.stop()
+                if topic != "Uncategorized":
+                    st.success(f"Will save under **{topic}** → **{ch}**")
+                elif allow_uncategorized:
+                    st.info(
+                        "Will save under **Uncategorized** (no topic mapping for this channel)."
+                    )
+
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 log_container = st.empty()
@@ -373,11 +415,6 @@ with tab1:
 
                 with st.status("Running…", expanded=True) as status:
                     update_logs("Analyzing URL…")
-                    is_single = (
-                        "watch?v=" in url
-                        or "youtu.be/" in url
-                        or "shorts/" in url
-                    )
                     if is_single:
                         videos = [{"url": url, "title": "", "id": ""}]
                     else:
@@ -602,21 +639,34 @@ with tab4:
                 )
                 log_box = st.empty()
                 if st.button("Transcribe selection", type="primary"):
-                    def log_cb(msg):
-                        log_box.code(msg)
-
-                    ok = transcribe.process_video(
-                        pending[pick]["url"],
-                        str(OUTPUT_DIR),
-                        False,
-                        whisper_model,
-                        log_callback=log_cb,
-                        force=False,
+                    one_url = pending[pick]["url"]
+                    ch, topic, prev_err = transcribe.preview_categorization(
+                        one_url, True, 1
                     )
-                    if ok:
-                        st.success("Saved to your library.")
-                        play_success_sound()
-                        st.session_state["catch_list"] = None
-                        st.rerun()
+                    if prev_err:
+                        st.error(prev_err)
+                    elif topic == "Uncategorized" and not allow_uncategorized:
+                        st.error(
+                            f"**{ch}** is not mapped to any topic. "
+                            "Add it under **Topics** or enable **Allow Uncategorized** in the sidebar."
+                        )
                     else:
-                        st.error("Could not complete. See log above.")
+
+                        def log_cb(msg):
+                            log_box.code(msg)
+
+                        ok = transcribe.process_video(
+                            one_url,
+                            str(OUTPUT_DIR),
+                            False,
+                            whisper_model,
+                            log_callback=log_cb,
+                            force=False,
+                        )
+                        if ok:
+                            st.success("Saved to your library.")
+                            play_success_sound()
+                            st.session_state["catch_list"] = None
+                            st.rerun()
+                        else:
+                            st.error("Could not complete. See log above.")

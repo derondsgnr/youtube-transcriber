@@ -33,7 +33,11 @@ Theme: light, Resend-inspired typography and spacing (see `.streamlit/config.tom
 
 Tabs: **Transcribe**, **Library**, **Topics**, **System** (health + catch-up on new channel/playlist videos).
 
-## Output
+## Output (folders)
+
+**Topic** names are your top-level folders. **Channel** is the subfolder (exact YouTube channel display name). You add topics and channel mappings on the **Topics** tab (or edit `topics.json`). The app creates `output/<Topic>/<Channel>/` when you run a job—you do not need to create folders by hand.
+
+If a channel is not listed under any topic, files go to **`Uncategorized`**. The UI blocks that by default until you enable **Allow Uncategorized** in the sidebar (or use `python transcribe.py URL --allow-uncategorized`).
 
 ```
 output/

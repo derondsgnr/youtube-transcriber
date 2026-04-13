@@ -104,6 +104,32 @@ def get_topic_for_channel(channel_name, topics):
     return "Uncategorized"
 
 
+def preview_categorization(url: str, is_single: bool, limit):
+    """
+    Resolve channel + topic folder for the first video in a job.
+    Returns (channel_name, topic_name, error_message).
+    error_message is set if metadata or list fetch failed.
+    """
+    topics = load_topics()
+    if is_single:
+        meta = get_video_metadata(url)
+        if not meta:
+            return None, None, "Could not fetch video metadata (check URL and network)."
+        ch = meta.get("channel") or meta.get("uploader") or "Unknown"
+        return ch, get_topic_for_channel(ch, topics), None
+    vids = get_video_list(url, limit)
+    if not vids:
+        return None, None, "No videos found for that URL."
+    first_url = vids[0].get("url")
+    if not first_url:
+        return None, None, "Could not resolve the first video URL."
+    meta = get_video_metadata(first_url)
+    if not meta:
+        return None, None, "Could not fetch metadata for the first video in the list."
+    ch = meta.get("channel") or meta.get("uploader") or "Unknown"
+    return ch, get_topic_for_channel(ch, topics), None
+
+
 def sanitize_filename(name):
     name = re.sub(r'[<>:"/\\|?*]', "", name)
     name = re.sub(r"\s+", " ", name).strip()
@@ -704,6 +730,11 @@ def main():
         action="store_true",
         help="Reprocess even if file exists or video is in state",
     )
+    parser.add_argument(
+        "--allow-uncategorized",
+        action="store_true",
+        help="Allow saving when the channel is not listed under any topic (Uncategorized folder)",
+    )
 
     args = parser.parse_args()
 
@@ -724,6 +755,20 @@ def main():
     if not videos:
         print("No videos found.")
         sys.exit(1)
+
+    ch, topic, err = preview_categorization(args.url, is_single, args.limit)
+    if err:
+        print(err)
+        sys.exit(1)
+    if topic == "Uncategorized" and not args.allow_uncategorized:
+        print(
+            f"Channel “{ch}” is not mapped to any topic. "
+            "Add the exact channel name under a topic in topics.json, "
+            "or pass --allow-uncategorized to save under Uncategorized."
+        )
+        sys.exit(1)
+    if topic != "Uncategorized":
+        print(f"Topic folder: {topic} (channel: {ch})")
 
     success = 0
     failed = 0
