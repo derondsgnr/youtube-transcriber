@@ -2,6 +2,8 @@ import hashlib
 import io
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -294,6 +296,97 @@ def save_topics_dict(topics: dict) -> None:
         json.dumps(topics, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+
+
+def list_output_topic_folders() -> list[str]:
+    if not OUTPUT_DIR.is_dir():
+        return []
+    return sorted(d.name for d in OUTPUT_DIR.iterdir() if d.is_dir())
+
+
+def list_channels_in_topic_folder(topic: str) -> list[str]:
+    p = OUTPUT_DIR / topic
+    if not p.is_dir():
+        return []
+    return sorted(d.name for d in p.iterdir() if d.is_dir())
+
+
+def channel_name_for_topics_from_folder(channel_dir: Path) -> str:
+    """Use YAML `channel` from a transcript if present; else folder name."""
+    for md in sorted(channel_dir.glob("*.md")):
+        try:
+            head = md.read_text(encoding="utf-8", errors="replace")[:6000]
+        except OSError:
+            continue
+        m = re.search(
+            r'^\s*channel:\s*["\']?([^"\'\n#]+?)\s*["\']?\s*$',
+            head,
+            re.MULTILINE,
+        )
+        if m:
+            return m.group(1).strip().strip('"').strip("'")
+    return channel_dir.name
+
+
+def move_channel_to_topic(
+    from_topic: str, channel_folder: str, to_topic_label: str
+) -> tuple[bool, str]:
+    """
+    Move output/from_topic/channel_folder/ → output/<sanitized to_topic>/channel_folder/
+    and update topics.json (remove channel from old lists, add to new).
+    """
+    to_topic_label = to_topic_label.strip()
+    if not to_topic_label:
+        return False, "Enter a target topic"
+    if from_topic == to_topic_label:
+        return False, "Source and target topic are the same"
+
+    src = OUTPUT_DIR / from_topic / channel_folder
+    if not src.is_dir():
+        return False, f"Not found: {from_topic}/{channel_folder}"
+
+    dst_parent = OUTPUT_DIR / transcribe.sanitize_filename(to_topic_label)
+    dst = dst_parent / channel_folder
+    dst_parent.mkdir(parents=True, exist_ok=True)
+
+    if dst.exists():
+        mds = list(src.glob("*.md"))
+        if not mds:
+            return False, "Source has no .md files"
+        for f in mds:
+            if (dst / f.name).exists():
+                return (
+                    False,
+                    f"Target already contains {f.name} — move or delete one copy first.",
+                )
+        for f in mds:
+            shutil.move(str(f), str(dst / f.name))
+        try:
+            if not any(src.iterdir()):
+                src.rmdir()
+        except OSError:
+            pass
+    else:
+        shutil.move(str(src), str(dst))
+
+    try:
+        old_root = OUTPUT_DIR / from_topic
+        if old_root.is_dir() and not any(old_root.iterdir()):
+            old_root.rmdir()
+    except OSError:
+        pass
+
+    ch_json = channel_name_for_topics_from_folder(dst)
+    topics = transcribe.load_topics()
+    for t, chs in list(topics.items()):
+        if chs:
+            topics[t] = [c for c in chs if c not in (ch_json, channel_folder)]
+    if to_topic_label not in topics:
+        topics[to_topic_label] = []
+    if ch_json not in topics[to_topic_label]:
+        topics[to_topic_label].append(ch_json)
+    save_topics_dict(topics)
+    return True, f"Moved to **{to_topic_label}** / **{channel_folder}** ({len(list(dst.glob('*.md')))} files)."
 
 
 def run_transcription_pipeline(
@@ -653,6 +746,78 @@ with tab1:
             )
 
 with tab2:
+    with card():
+        st.markdown("### Recategorize")
+        st.caption(
+            "Move a whole **channel** (all videos in that folder) to another **topic** folder. "
+            "Updates `topics.json` using the **channel** field in your `.md` files when present."
+        )
+        topic_dirs = list_output_topic_folders()
+        if not topic_dirs:
+            st.info("Nothing in `output/` yet.")
+        else:
+            rc1, rc2 = st.columns(2)
+            with rc1:
+                from_rec = st.selectbox(
+                    "From topic",
+                    topic_dirs,
+                    key="recat_from_topic",
+                )
+            chans = list_channels_in_topic_folder(from_rec)
+            with rc2:
+                channel_pick = st.selectbox(
+                    "Channel folder",
+                    chans if chans else ["(empty)"],
+                    disabled=not chans,
+                    key="recat_channel",
+                )
+            existing_topics = sorted(transcribe.load_topics().keys())
+            how = st.radio(
+                "Move to",
+                ["Existing topic", "New topic"],
+                horizontal=True,
+                key="recat_how",
+            )
+            if how == "Existing topic":
+                if existing_topics:
+                    st.selectbox(
+                        "Target topic",
+                        existing_topics,
+                        key="recat_target_existing",
+                    )
+                else:
+                    st.warning("No topics in `topics.json` — choose **New topic** above.")
+            else:
+                st.text_input(
+                    "New topic name",
+                    placeholder="e.g. Stanford HCI, AI & Learning",
+                    key="recat_target_new",
+                )
+            if st.button(
+                "Move channel & update topics",
+                type="primary",
+                key="recat_btn",
+            ):
+                if not chans or channel_pick == "(empty)":
+                    st.error("Pick a channel folder that has files.")
+                else:
+                    mode = st.session_state.get("recat_how", "Existing topic")
+                    if mode == "Existing topic":
+                        tl = (st.session_state.get("recat_target_existing") or "").strip()
+                    else:
+                        tl = (st.session_state.get("recat_target_new") or "").strip()
+                    if not tl:
+                        st.error("Choose or enter a target topic.")
+                    else:
+                        from_f = st.session_state.get("recat_from_topic", from_rec)
+                        chn = st.session_state.get("recat_channel", channel_pick)
+                        ok_rec, msg_rec = move_channel_to_topic(from_f, chn, tl)
+                        if ok_rec:
+                            st.success(msg_rec)
+                            st.rerun()
+                        else:
+                            st.error(msg_rec)
+
     with card():
         st.markdown("### Library")
         all_ts = get_all_transcripts()
