@@ -311,6 +311,13 @@ def list_channels_in_topic_folder(topic: str) -> list[str]:
     return sorted(d.name for d in p.iterdir() if d.is_dir())
 
 
+def list_transcripts_in_channel_folder(topic: str, channel_folder: str) -> list[Path]:
+    p = OUTPUT_DIR / topic / channel_folder
+    if not p.is_dir():
+        return []
+    return sorted(p.glob("*.md"))
+
+
 def channel_name_for_topics_from_folder(channel_dir: Path) -> str:
     """Use YAML `channel` from a transcript if present; else folder name."""
     for md in sorted(channel_dir.glob("*.md")):
@@ -387,6 +394,62 @@ def move_channel_to_topic(
         topics[to_topic_label].append(ch_json)
     save_topics_dict(topics)
     return True, f"Moved to **{to_topic_label}** / **{channel_folder}** ({len(list(dst.glob('*.md')))} files)."
+
+
+def move_selected_transcripts_to_topic(
+    from_topic: str,
+    channel_folder: str,
+    filenames: list[str],
+    to_topic_label: str,
+) -> tuple[bool, str]:
+    """
+    Move selected markdown files only.
+    This reorganizes existing transcripts but does not change future channel mapping
+    in topics.json, because mapping is channel-level.
+    """
+    to_topic_label = to_topic_label.strip()
+    if not to_topic_label:
+        return False, "Enter a target topic"
+    if not filenames:
+        return False, "Select at least one transcript"
+
+    src_dir = OUTPUT_DIR / from_topic / channel_folder
+    if not src_dir.is_dir():
+        return False, f"Not found: {from_topic}/{channel_folder}"
+
+    dst_parent = OUTPUT_DIR / transcribe.sanitize_filename(to_topic_label)
+    dst_dir = dst_parent / channel_folder
+    dst_dir.mkdir(parents=True, exist_ok=True)
+
+    moved = 0
+    for name in filenames:
+        src = src_dir / name
+        dst = dst_dir / name
+        if not src.is_file():
+            return False, f"Missing file: {name}"
+        if dst.exists():
+            return False, f"Target already contains {name}"
+    for name in filenames:
+        shutil.move(str(src_dir / name), str(dst_dir / name))
+        moved += 1
+
+    try:
+        if src_dir.is_dir() and not any(src_dir.iterdir()):
+            src_dir.rmdir()
+    except OSError:
+        pass
+    try:
+        old_root = OUTPUT_DIR / from_topic
+        if old_root.is_dir() and not any(old_root.iterdir()):
+            old_root.rmdir()
+    except OSError:
+        pass
+
+    return (
+        True,
+        f"Moved **{moved}** selected transcript(s) to **{to_topic_label}** / **{channel_folder}**. "
+        "Future uploads from this channel still follow its current topic mapping.",
+    )
 
 
 def run_transcription_pipeline(
@@ -749,8 +812,8 @@ with tab2:
     with card():
         st.markdown("### Recategorize")
         st.caption(
-            "Move a whole **channel** (all videos in that folder) to another **topic** folder. "
-            "Updates `topics.json` using the **channel** field in your `.md` files when present."
+            "Move either a whole **channel** folder or only the **selected transcripts**. "
+            "Whole-channel moves update future mapping in `topics.json`; selected-file moves only reorganize existing files."
         )
         topic_dirs = list_output_topic_folders()
         if not topic_dirs:
@@ -770,6 +833,25 @@ with tab2:
                     chans if chans else ["(empty)"],
                     disabled=not chans,
                     key="recat_channel",
+                )
+            files_in_channel = (
+                list_transcripts_in_channel_folder(from_rec, channel_pick)
+                if chans and channel_pick != "(empty)"
+                else []
+            )
+            move_scope = st.radio(
+                "What do you want to move?",
+                ["Entire channel", "Selected transcripts"],
+                horizontal=True,
+                key="recat_scope",
+            )
+            if move_scope == "Selected transcripts":
+                st.multiselect(
+                    "Transcripts",
+                    [p.name for p in files_in_channel],
+                    format_func=lambda name: Path(name).stem,
+                    key="recat_selected_files",
+                    placeholder="Choose one or more transcripts",
                 )
             existing_topics = sorted(transcribe.load_topics().keys())
             how = st.radio(
@@ -794,7 +876,7 @@ with tab2:
                     key="recat_target_new",
                 )
             if st.button(
-                "Move channel & update topics",
+                "Apply recategorization",
                 type="primary",
                 key="recat_btn",
             ):
@@ -811,7 +893,14 @@ with tab2:
                     else:
                         from_f = st.session_state.get("recat_from_topic", from_rec)
                         chn = st.session_state.get("recat_channel", channel_pick)
-                        ok_rec, msg_rec = move_channel_to_topic(from_f, chn, tl)
+                        scope = st.session_state.get("recat_scope", "Entire channel")
+                        if scope == "Entire channel":
+                            ok_rec, msg_rec = move_channel_to_topic(from_f, chn, tl)
+                        else:
+                            selected = st.session_state.get("recat_selected_files", [])
+                            ok_rec, msg_rec = move_selected_transcripts_to_topic(
+                                from_f, chn, selected, tl
+                            )
                         if ok_rec:
                             st.success(msg_rec)
                             st.rerun()
