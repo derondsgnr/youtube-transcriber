@@ -263,6 +263,28 @@ def play_success_sound():
         pass
 
 
+def play_error_sound():
+    try:
+        subprocess.run(
+            ["afplay", "/System/Library/Sounds/Basso.aiff"], check=False
+        )
+    except Exception:
+        pass
+
+
+def notify_done(message: str, kind: str = "success"):
+    """Consistent end-of-run feedback: toast + native macOS sound."""
+    icon = "✅" if kind == "success" else "⚠️"
+    try:
+        st.toast(message, icon=icon)
+    except Exception:
+        pass
+    if kind == "success":
+        play_success_sound()
+    else:
+        play_error_sound()
+
+
 def open_in_finder(path: Path):
     if sys.platform == "darwin":
         subprocess.run(["open", str(path)], check=False)
@@ -499,6 +521,7 @@ def run_video_batch(
         update_logs("Analyzing URL…")
         if not videos:
             st.error("No videos found for that URL.")
+            notify_done("No videos found for that URL.", kind="error")
             summary = {
                 "total": 0,
                 "success": 0,
@@ -545,12 +568,16 @@ def run_video_batch(
                 label=f"Finished with issues · {success_count} saved, {len(failed_videos)} failed",
                 state="error",
             )
+            notify_done(
+                f"Finished with issues: {success_count} saved, {len(failed_videos)} failed.",
+                kind="error",
+            )
         else:
             status.update(
                 label=f"Complete · {success_count} of {len(videos)} saved",
                 state="complete",
             )
-            play_success_sound()
+            notify_done(f"Complete: {success_count} transcript(s) saved.")
             st.balloons()
 
     summary = {
@@ -653,6 +680,7 @@ with st.sidebar:
     )
     st.markdown("**Transcriber**")
     st.caption("Runs locally · no API keys for capture")
+    st.caption("Run feedback: toast + sound on success or failure")
 
     st.divider()
 
@@ -1060,6 +1088,10 @@ with tab2:
                                 label=f"Finished with issues · {ok_count} updated, {len(failed_items)} failed",
                                 state="error",
                             )
+                            notify_done(
+                                f"Batch rerun finished with issues: {ok_count} updated, {len(failed_items)} failed.",
+                                kind="error",
+                            )
                             st.error(
                                 "Failed: " + ", ".join(failed_items[:5])
                                 + (f" + {len(failed_items) - 5} more" if len(failed_items) > 5 else "")
@@ -1069,6 +1101,7 @@ with tab2:
                                 label=f"Updated {ok_count} transcript(s)",
                                 state="complete",
                             )
+                            notify_done(f"Batch rerun complete: {ok_count} transcript(s) updated.")
                             st.success("Batch rerun complete. Refresh if you want the library order to update.")
 
             for ts in filtered:
@@ -1096,9 +1129,11 @@ with tab2:
                                 log_callback=rerun_cb,
                             )
                             if ok_rerun:
+                                notify_done("Transcript rebuilt and file updated.")
                                 st.success("Transcript rebuilt and file updated.")
                                 st.rerun()
                             else:
+                                notify_done("Could not rerun this transcript.", kind="error")
                                 st.error("Could not rerun this transcript. See log above.")
                     with a2:
                         st.download_button(
