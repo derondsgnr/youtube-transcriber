@@ -3,6 +3,7 @@ __pycache__/
 .DS_Store
 output/
 tmp/
+jobs/
 state/processed.json
 config.json
 *.wav

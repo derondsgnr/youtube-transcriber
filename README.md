@@ -33,6 +33,8 @@ Theme: light, Resend-inspired typography and spacing (see `.streamlit/config.tom
 
 Tabs: **Transcribe**, **Library**, **Topics**, **System** (health + catch-up on new channel/playlist videos).
 
+Long-running UI actions start **background jobs** so the app remains usable. The Jobs panel shows progress, logs, failures, and retry buttons. Runtime job files live in `jobs/` and are ignored by git.
+
 ## Output (folders)
 
 **Topic** names are your top-level folders. **Channel** is the subfolder (exact YouTube channel display name). You add topics and channel mappings on the **Topics** tab (or edit `topics.json`). The app creates `output/<Topic>/<Channel>/` when you run a job—you do not need to create folders by hand.

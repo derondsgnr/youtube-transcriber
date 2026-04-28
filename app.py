@@ -6,16 +6,20 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 import transcribe
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = PROJECT_ROOT / "output"
+JOBS_DIR = PROJECT_ROOT / "jobs"
 
 
 def card():
@@ -474,123 +478,196 @@ def move_selected_transcripts_to_topic(
     )
 
 
-def run_transcription_pipeline(
+def utc_now():
+    return datetime.utcnow().isoformat() + "Z"
+
+
+def job_file(job_id: str) -> Path:
+    return JOBS_DIR / f"{job_id}.json"
+
+
+def read_job_file(path: Path) -> dict | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def list_jobs(limit: int = 8) -> list[dict]:
+    if not JOBS_DIR.is_dir():
+        return []
+    jobs = [j for j in (read_job_file(p) for p in JOBS_DIR.glob("*.json")) if j]
+    return sorted(jobs, key=lambda j: j.get("created_at", ""), reverse=True)[:limit]
+
+
+def job_log_tail(job_id: str, lines: int = 80) -> str:
+    path = JOBS_DIR / f"{job_id}.log"
+    if not path.exists():
+        return ""
+    try:
+        return "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:])
+    except OSError:
+        return ""
+
+
+def create_background_job(kind: str, payload: dict, label: str) -> str:
+    JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    job_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    job = {
+        "id": job_id,
+        "kind": kind,
+        "label": label,
+        "status": "queued",
+        "created_at": utc_now(),
+        "updated_at": utc_now(),
+        "total": 0,
+        "success": 0,
+        "failed": [],
+        "payload": payload,
+    }
+    job_file(job_id).write_text(json.dumps(job, indent=2, ensure_ascii=False), encoding="utf-8")
+    with open(os.devnull, "w") as devnull:
+        subprocess.Popen(
+            [sys.executable, str(PROJECT_ROOT / "job_worker.py"), job_id],
+            cwd=str(PROJECT_ROOT),
+            stdout=devnull,
+            stderr=devnull,
+            start_new_session=True,
+        )
+    return job_id
+
+
+def create_transcribe_job(
     url: str,
     limit: int,
     model: str,
     force_whisper: bool,
     force_reprocess: bool,
-) -> dict:
-    """Run yt-dlp + process loop with progress UI (expects URL already allowed)."""
-    url = url.strip()
-    is_single = "watch?v=" in url or "youtu.be/" in url or "shorts/" in url
-    if is_single:
-        videos = [{"url": url, "title": "", "id": ""}]
-    else:
-        videos = transcribe.get_video_list(url, limit)
-    return run_video_batch(
-        videos=videos,
-        model=model,
-        force_whisper=force_whisper,
-        force_reprocess=force_reprocess,
-        source_url=url,
+) -> str:
+    return create_background_job(
+        "transcribe_url",
+        {
+            "url": url.strip(),
+            "limit": int(limit),
+            "model": model,
+            "force_whisper": force_whisper,
+            "force_reprocess": force_reprocess,
+            "output_dir": str(OUTPUT_DIR),
+        },
+        label=f"Transcribe: {url.strip()[:80]}",
     )
 
 
-def run_video_batch(
-    videos: list[dict],
-    model: str,
-    force_whisper: bool,
-    force_reprocess: bool,
-    source_url: str = "",
-) -> dict:
-    """Run a specific batch of videos and return a retryable summary."""
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    log_container = st.empty()
-    logs = []
+def create_rerun_files_job(files: list[Path], model: str = "base") -> str:
+    return create_background_job(
+        "rerun_files",
+        {
+            "files": [str(p) for p in files],
+            "model": model,
+            "force_whisper": False,
+        },
+        label=f"Rerun {len(files)} transcript(s)",
+    )
 
-    def update_logs(msg):
-        logs.append(f"{datetime.now().strftime('%H:%M:%S')}  {msg}")
-        log_container.markdown(
-            '<div class="yt-log">' + "<br>".join(logs[::-1]) + "</div>",
-            unsafe_allow_html=True,
-        )
 
-    with st.status("Running…", expanded=True) as status:
-        update_logs("Analyzing URL…")
-        if not videos:
-            st.error("No videos found for that URL.")
-            notify_done("No videos found for that URL.", kind="error")
-            summary = {
-                "total": 0,
-                "success": 0,
-                "failed": [],
-                "model": model,
-                "force_whisper": force_whisper,
-                "force_reprocess": force_reprocess,
-                "source_url": source_url,
-            }
-            st.session_state["last_run_summary"] = summary
-            return summary
+def create_retry_failed_job(summary: dict) -> str:
+    return create_background_job(
+        "videos",
+        {
+            "videos": summary.get("failed", []),
+            "model": summary.get("model", "base"),
+            "force_whisper": summary.get("force_whisper", False),
+            "force_reprocess": summary.get("force_reprocess", False),
+            "output_dir": str(OUTPUT_DIR),
+        },
+        label="Retry failed videos",
+    )
 
-        success_count = 0
-        failed_videos = []
-        for i, vid in enumerate(videos):
-            current_title = vid.get("title", "Video")
-            status_text.markdown(
-                f"**Step {i + 1} of {len(videos)}** · {current_title}"
-            )
-            progress_bar.progress((i) / max(len(videos), 1))
-            update_logs(f"Starting: {current_title}")
-            ok = transcribe.process_video(
-                vid["url"],
-                str(OUTPUT_DIR),
-                force_whisper,
-                model,
-                log_callback=update_logs,
-                force=force_reprocess,
-            )
-            if ok:
-                success_count += 1
+
+def render_jobs_panel():
+    jobs = list_jobs()
+    active = [j for j in jobs if j.get("status") in {"queued", "running"}]
+    final_statuses = {"completed", "completed_with_errors", "failed"}
+    notified = st.session_state.setdefault("notified_job_ids", [])
+
+    for job in jobs:
+        if job.get("status") in final_statuses and job["id"] not in notified:
+            if job["status"] == "completed":
+                notify_done(f"Job complete: {job.get('label', job['id'])}")
             else:
-                failed_videos.append(
-                    {
-                        "url": vid.get("url", ""),
-                        "title": current_title,
-                        "id": vid.get("id", ""),
-                    }
+                notify_done(f"Job finished with issues: {job.get('label', job['id'])}", kind="error")
+            notified.append(job["id"])
+
+    if not jobs:
+        return
+
+    with card():
+        h1, h2 = st.columns([2, 1])
+        with h1:
+            st.markdown("### Jobs")
+            st.caption("Background jobs keep the app usable while transcription runs.")
+        with h2:
+            if st.button("Refresh jobs", use_container_width=True, key="refresh_jobs"):
+                st.rerun()
+
+        if active:
+            auto_refresh = st.checkbox(
+                "Auto-refresh while jobs are active",
+                value=False,
+                key="jobs_auto_refresh",
+            )
+            if auto_refresh:
+                components.html(
+                    "<script>setTimeout(() => window.parent.location.reload(), 5000);</script>",
+                    height=0,
                 )
 
-        progress_bar.progress(1.0)
-        if failed_videos:
-            status.update(
-                label=f"Finished with issues · {success_count} saved, {len(failed_videos)} failed",
-                state="error",
-            )
-            notify_done(
-                f"Finished with issues: {success_count} saved, {len(failed_videos)} failed.",
-                kind="error",
-            )
-        else:
-            status.update(
-                label=f"Complete · {success_count} of {len(videos)} saved",
-                state="complete",
-            )
-            notify_done(f"Complete: {success_count} transcript(s) saved.")
-            st.balloons()
-
-    summary = {
-        "total": len(videos),
-        "success": success_count,
-        "failed": failed_videos,
-        "model": model,
-        "force_whisper": force_whisper,
-        "force_reprocess": force_reprocess,
-        "source_url": source_url,
-    }
-    st.session_state["last_run_summary"] = summary
-    return summary
+        for job in jobs[:5]:
+            status = job.get("status", "unknown")
+            total = int(job.get("total") or 0)
+            success = int(job.get("success") or 0)
+            failed = job.get("failed") or []
+            current = job.get("current") or {}
+            title = f"{status} · {job.get('label', job['id'])}"
+            with st.expander(title[:140], expanded=status in {"queued", "running"}):
+                st.caption(f"ID: `{job['id']}`")
+                st.write(f"**Progress:** {success}/{total} saved · {len(failed)} failed")
+                if current:
+                    st.caption(f"Current: {current.get('index', '?')} · {current.get('title', '')}")
+                if job.get("error"):
+                    st.error(job["error"])
+                if failed:
+                    st.warning("Failed items")
+                    for item in failed[:8]:
+                        st.caption(f"• {item.get('title') or item.get('path')}")
+                    retryable_videos = [item for item in failed if item.get("url")]
+                    retryable_files = [Path(item["path"]) for item in failed if item.get("path")]
+                    if retryable_videos:
+                        if st.button("Retry failed items", key=f"retry_job_{job['id']}"):
+                            retry_id = create_background_job(
+                                "videos",
+                                {
+                                    "videos": retryable_videos,
+                                    "model": job.get("payload", {}).get("model", "base"),
+                                    "force_whisper": job.get("payload", {}).get("force_whisper", False),
+                                    "force_reprocess": job.get("payload", {}).get("force_reprocess", False),
+                                    "output_dir": str(OUTPUT_DIR),
+                                },
+                                label=f"Retry failed from {job.get('label', job['id'])}",
+                            )
+                            st.success(f"Retry job started (`{retry_id}`).")
+                            st.rerun()
+                    elif retryable_files:
+                        if st.button("Retry failed files", key=f"retry_job_{job['id']}"):
+                            retry_id = create_rerun_files_job(
+                                retryable_files,
+                                model=job.get("payload", {}).get("model", "base"),
+                            )
+                            st.success(f"Retry job started (`{retry_id}`).")
+                            st.rerun()
+                log_text = job_log_tail(job["id"])
+                if log_text:
+                    st.code(log_text)
 
 
 @st.dialog("Map this channel")
@@ -719,6 +796,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+render_jobs_panel()
+
 tab1, tab2, tab3, tab4 = st.tabs(
     ["Transcribe", "Library", "Topics", "System"]
 )
@@ -732,49 +811,16 @@ with tab1:
     with col_main:
         auto_job = st.session_state.pop("auto_run_job", None)
         if auto_job:
-            st.success(
-                f"Saved **{auto_job['channel']}** to a topic — running your job…"
-            )
-            run_transcription_pipeline(
+            job_id = create_transcribe_job(
                 auto_job["url"],
                 auto_job["limit"],
                 auto_job["model"],
                 auto_job["force_whisper"],
                 auto_job["force_reprocess"],
             )
-
-        last_run_summary = st.session_state.get("last_run_summary")
-        if last_run_summary and last_run_summary.get("total", 0) > 0:
-            with card():
-                failed = last_run_summary.get("failed", [])
-                failed_count = len(failed)
-                success_count = last_run_summary.get("success", 0)
-                total_count = last_run_summary.get("total", 0)
-                st.markdown("### Last run")
-                if failed_count:
-                    st.warning(
-                        f"{success_count} saved, {failed_count} failed out of {total_count}."
-                    )
-                    st.caption("Failed videos")
-                    for item in failed[:10]:
-                        st.caption(f"• {item.get('title', 'Video')}")
-                    if failed_count > 10:
-                        st.caption(f"+ {failed_count - 10} more")
-                    if st.button(
-                        "Retry failed",
-                        type="primary",
-                        use_container_width=True,
-                        key="retry_failed_videos",
-                    ):
-                        run_video_batch(
-                            videos=failed,
-                            model=last_run_summary.get("model", "base"),
-                            force_whisper=last_run_summary.get("force_whisper", False),
-                            force_reprocess=last_run_summary.get("force_reprocess", False),
-                            source_url=last_run_summary.get("source_url", ""),
-                        )
-                else:
-                    st.success(f"All {total_count} video(s) saved successfully.")
+            st.success(
+                f"Saved **{auto_job['channel']}** to a topic — background job started (`{job_id}`)."
+            )
 
         with card():
             st.markdown("### New job")
@@ -846,13 +892,15 @@ with tab1:
                     st.info(
                         "Will save under **Uncategorized** (no topic mapping for this channel)."
                     )
-                run_transcription_pipeline(
-                    url=url,
-                    limit=int(limit),
-                    model=model,
-                    force_whisper=force_whisper,
-                    force_reprocess=force_reprocess,
+                job_id = create_transcribe_job(
+                    url,
+                    int(limit),
+                    model,
+                    force_whisper,
+                    force_reprocess,
                 )
+                st.success(f"Background job started (`{job_id}`). You can keep using the app.")
+                st.rerun()
 
     with col_side:
         with card():
@@ -1046,63 +1094,12 @@ with tab2:
 
                 if run_batch_rerun:
                     targets = filtered[: int(batch_count)]
-                    batch_log = st.empty()
-                    log_lines = []
-                    ok_count = 0
-                    failed_items = []
-
-                    def append_batch_log(msg):
-                        log_lines.append(f"{datetime.now().strftime('%H:%M:%S')}  {msg}")
-                        batch_log.markdown(
-                            '<div class="yt-log">'
-                            + "<br>".join(log_lines[::-1])
-                            + "</div>",
-                            unsafe_allow_html=True,
-                        )
-
-                    with st.status(
-                        f"Rerunning {len(targets)} transcript(s)…",
-                        expanded=True,
-                    ) as batch_status:
-                        for idx, item in enumerate(targets, start=1):
-                            append_batch_log(
-                                f"[{idx}/{len(targets)}] {item['name']}"
-                            )
-
-                            def rerun_cb(msg):
-                                append_batch_log(f"  {msg}")
-
-                            ok_item = transcribe.rerun_markdown_file(
-                                item["path"],
-                                force_whisper=False,
-                                model_size=batch_model,
-                                log_callback=rerun_cb,
-                            )
-                            if ok_item:
-                                ok_count += 1
-                            else:
-                                failed_items.append(item["name"])
-
-                        if failed_items:
-                            batch_status.update(
-                                label=f"Finished with issues · {ok_count} updated, {len(failed_items)} failed",
-                                state="error",
-                            )
-                            notify_done(
-                                f"Batch rerun finished with issues: {ok_count} updated, {len(failed_items)} failed.",
-                                kind="error",
-                            )
-                            st.error(
-                                "Failed: " + ", ".join(failed_items[:5])
-                                + (f" + {len(failed_items) - 5} more" if len(failed_items) > 5 else "")
-                            )
-                        else:
-                            batch_status.update(
-                                label=f"Updated {ok_count} transcript(s)",
-                                state="complete",
-                            )
-                            notify_done(f"Batch rerun complete: {ok_count} transcript(s) updated.")
-                            st.success("Batch rerun complete. Refresh if you want the library order to update.")
+                    job_id = create_rerun_files_job(
+                        [item["path"] for item in targets],
+                        model=batch_model,
+                    )
+                    st.success(f"Batch rerun job started (`{job_id}`). You can keep using the app.")
+                    st.rerun()
 
             for ts in filtered:
                 title = f"{ts['topic']} · {ts['channel']} · {ts['name']}"
@@ -1117,24 +1114,9 @@ with tab2:
                             key=f"rerun_md_{path_key}",
                             use_container_width=True,
                         ):
-                            rerun_log = st.empty()
-
-                            def rerun_cb(msg):
-                                rerun_log.code(msg)
-
-                            ok_rerun = transcribe.rerun_markdown_file(
-                                ts["path"],
-                                force_whisper=False,
-                                model_size="base",
-                                log_callback=rerun_cb,
-                            )
-                            if ok_rerun:
-                                notify_done("Transcript rebuilt and file updated.")
-                                st.success("Transcript rebuilt and file updated.")
-                                st.rerun()
-                            else:
-                                notify_done("Could not rerun this transcript.", kind="error")
-                                st.error("Could not rerun this transcript. See log above.")
+                            job_id = create_rerun_files_job([ts["path"]], model="base")
+                            st.success(f"Rerun job started (`{job_id}`).")
+                            st.rerun()
                     with a2:
                         st.download_button(
                             label="Download this file (.md)",
