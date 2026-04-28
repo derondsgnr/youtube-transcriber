@@ -772,6 +772,7 @@ def main():
 
     success = 0
     failed = 0
+    failed_titles = []
     for i, vid in enumerate(videos):
         print(f"\n[{i+1}/{len(videos)}] {vid.get('title', vid['url'])}")
         try:
@@ -782,12 +783,18 @@ def main():
                 success += 1
             else:
                 failed += 1
+                failed_titles.append(vid.get("title", vid["url"]))
         except Exception as e:
             print(f"  [!] Error: {e}")
             failed += 1
+            failed_titles.append(vid.get("title", vid["url"]))
 
     print(f"\n{'=' * 40}")
     print(f"Done. {success} transcribed, {failed} failed.")
+    if failed_titles:
+        print("Failed videos:")
+        for title in failed_titles:
+            print(f"  - {title}")
     print(f"Output: {os.path.abspath(args.output)}")
 
 

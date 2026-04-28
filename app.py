@@ -458,12 +458,31 @@ def run_transcription_pipeline(
     model: str,
     force_whisper: bool,
     force_reprocess: bool,
-) -> None:
+) -> dict:
     """Run yt-dlp + process loop with progress UI (expects URL already allowed)."""
     url = url.strip()
-    is_single = (
-        "watch?v=" in url or "youtu.be/" in url or "shorts/" in url
+    is_single = "watch?v=" in url or "youtu.be/" in url or "shorts/" in url
+    if is_single:
+        videos = [{"url": url, "title": "", "id": ""}]
+    else:
+        videos = transcribe.get_video_list(url, limit)
+    return run_video_batch(
+        videos=videos,
+        model=model,
+        force_whisper=force_whisper,
+        force_reprocess=force_reprocess,
+        source_url=url,
     )
+
+
+def run_video_batch(
+    videos: list[dict],
+    model: str,
+    force_whisper: bool,
+    force_reprocess: bool,
+    source_url: str = "",
+) -> dict:
+    """Run a specific batch of videos and return a retryable summary."""
     progress_bar = st.progress(0)
     status_text = st.empty()
     log_container = st.empty()
@@ -478,16 +497,22 @@ def run_transcription_pipeline(
 
     with st.status("Running…", expanded=True) as status:
         update_logs("Analyzing URL…")
-        if is_single:
-            videos = [{"url": url, "title": "", "id": ""}]
-        else:
-            videos = transcribe.get_video_list(url, limit)
-
         if not videos:
             st.error("No videos found for that URL.")
-            return
+            summary = {
+                "total": 0,
+                "success": 0,
+                "failed": [],
+                "model": model,
+                "force_whisper": force_whisper,
+                "force_reprocess": force_reprocess,
+                "source_url": source_url,
+            }
+            st.session_state["last_run_summary"] = summary
+            return summary
 
         success_count = 0
+        failed_videos = []
         for i, vid in enumerate(videos):
             current_title = vid.get("title", "Video")
             status_text.markdown(
@@ -505,14 +530,40 @@ def run_transcription_pipeline(
             )
             if ok:
                 success_count += 1
+            else:
+                failed_videos.append(
+                    {
+                        "url": vid.get("url", ""),
+                        "title": current_title,
+                        "id": vid.get("id", ""),
+                    }
+                )
 
         progress_bar.progress(1.0)
-        status.update(
-            label=f"Complete · {success_count} of {len(videos)} saved",
-            state="complete",
-        )
-        play_success_sound()
-        st.balloons()
+        if failed_videos:
+            status.update(
+                label=f"Finished with issues · {success_count} saved, {len(failed_videos)} failed",
+                state="error",
+            )
+        else:
+            status.update(
+                label=f"Complete · {success_count} of {len(videos)} saved",
+                state="complete",
+            )
+            play_success_sound()
+            st.balloons()
+
+    summary = {
+        "total": len(videos),
+        "success": success_count,
+        "failed": failed_videos,
+        "model": model,
+        "force_whisper": force_whisper,
+        "force_reprocess": force_reprocess,
+        "source_url": source_url,
+    }
+    st.session_state["last_run_summary"] = summary
+    return summary
 
 
 @st.dialog("Map this channel")
@@ -664,6 +715,39 @@ with tab1:
                 auto_job["force_reprocess"],
             )
 
+        last_run_summary = st.session_state.get("last_run_summary")
+        if last_run_summary and last_run_summary.get("total", 0) > 0:
+            with card():
+                failed = last_run_summary.get("failed", [])
+                failed_count = len(failed)
+                success_count = last_run_summary.get("success", 0)
+                total_count = last_run_summary.get("total", 0)
+                st.markdown("### Last run")
+                if failed_count:
+                    st.warning(
+                        f"{success_count} saved, {failed_count} failed out of {total_count}."
+                    )
+                    st.caption("Failed videos")
+                    for item in failed[:10]:
+                        st.caption(f"• {item.get('title', 'Video')}")
+                    if failed_count > 10:
+                        st.caption(f"+ {failed_count - 10} more")
+                    if st.button(
+                        "Retry failed",
+                        type="primary",
+                        use_container_width=True,
+                        key="retry_failed_videos",
+                    ):
+                        run_video_batch(
+                            videos=failed,
+                            model=last_run_summary.get("model", "base"),
+                            force_whisper=last_run_summary.get("force_whisper", False),
+                            force_reprocess=last_run_summary.get("force_reprocess", False),
+                            source_url=last_run_summary.get("source_url", ""),
+                        )
+                else:
+                    st.success(f"All {total_count} video(s) saved successfully.")
+
         with card():
             st.markdown("### New job")
             st.caption(
@@ -734,57 +818,13 @@ with tab1:
                     st.info(
                         "Will save under **Uncategorized** (no topic mapping for this channel)."
                     )
-
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                log_container = st.empty()
-                logs = []
-
-                def update_logs(msg):
-                    logs.append(f"{datetime.now().strftime('%H:%M:%S')}  {msg}")
-                    log_container.markdown(
-                        '<div class="yt-log">'
-                        + "<br>".join(logs[::-1])
-                        + "</div>",
-                        unsafe_allow_html=True,
-                    )
-
-                with st.status("Running…", expanded=True) as status:
-                    update_logs("Analyzing URL…")
-                    if is_single:
-                        videos = [{"url": url, "title": "", "id": ""}]
-                    else:
-                        videos = transcribe.get_video_list(url, limit)
-
-                    if not videos:
-                        st.error("No videos found for that URL.")
-                    else:
-                        success_count = 0
-                        for i, vid in enumerate(videos):
-                            current_title = vid.get("title", "Video")
-                            status_text.markdown(
-                                f"**Step {i + 1} of {len(videos)}** · {current_title}"
-                            )
-                            progress_bar.progress((i) / max(len(videos), 1))
-                            update_logs(f"Starting: {current_title}")
-                            ok = transcribe.process_video(
-                                vid["url"],
-                                str(OUTPUT_DIR),
-                                force_whisper,
-                                model,
-                                log_callback=update_logs,
-                                force=force_reprocess,
-                            )
-                            if ok:
-                                success_count += 1
-
-                        progress_bar.progress(1.0)
-                        status.update(
-                            label=f"Complete · {success_count} of {len(videos)} saved",
-                            state="complete",
-                        )
-                        play_success_sound()
-                        st.balloons()
+                run_transcription_pipeline(
+                    url=url,
+                    limit=int(limit),
+                    model=model,
+                    force_whisper=force_whisper,
+                    force_reprocess=force_reprocess,
+                )
 
     with col_side:
         with card():
