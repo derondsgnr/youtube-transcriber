@@ -992,14 +992,38 @@ with tab2:
                     path_key = hashlib.md5(
                         str(ts["path"]).encode(), usedforsecurity=False
                     ).hexdigest()[:20]
-                    st.download_button(
-                        label="Download this file (.md)",
-                        data=ts["path"].read_bytes(),
-                        file_name=ts["path"].name,
-                        mime="text/markdown; charset=utf-8",
-                        key=f"dl_md_{path_key}",
-                        use_container_width=True,
-                    )
+                    a1, a2 = st.columns(2)
+                    with a1:
+                        if st.button(
+                            "Rerun & overwrite",
+                            key=f"rerun_md_{path_key}",
+                            use_container_width=True,
+                        ):
+                            rerun_log = st.empty()
+
+                            def rerun_cb(msg):
+                                rerun_log.code(msg)
+
+                            ok_rerun = transcribe.rerun_markdown_file(
+                                ts["path"],
+                                force_whisper=False,
+                                model_size="base",
+                                log_callback=rerun_cb,
+                            )
+                            if ok_rerun:
+                                st.success("Transcript rebuilt and file updated.")
+                                st.rerun()
+                            else:
+                                st.error("Could not rerun this transcript. See log above.")
+                    with a2:
+                        st.download_button(
+                            label="Download this file (.md)",
+                            data=ts["path"].read_bytes(),
+                            file_name=ts["path"].name,
+                            mime="text/markdown; charset=utf-8",
+                            key=f"dl_md_{path_key}",
+                            use_container_width=True,
+                        )
                     content = ts["path"].read_text(encoding="utf-8")
                     st.markdown(content)
 

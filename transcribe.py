@@ -657,6 +657,75 @@ def process_video(
     return True
 
 
+def extract_source_url_from_markdown(markdown_path):
+    """Read the original YouTube URL from a saved markdown file."""
+    try:
+        text = Path(markdown_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = re.search(r'^url:\s*"([^"\n]+)"\s*$', text, re.MULTILINE)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def rerun_markdown_file(markdown_path, force_whisper=False, model_size="base", log_callback=None):
+    """
+    Rebuild an existing markdown file in place from its saved source URL.
+    This preserves the current file location instead of re-categorizing it.
+    """
+    def log(msg):
+        print(f"  {msg}")
+        if log_callback:
+            log_callback(msg)
+
+    markdown_path = Path(markdown_path)
+    source_url = extract_source_url_from_markdown(markdown_path)
+    if not source_url:
+        log("[!] Could not find source URL in saved markdown file")
+        return False
+
+    log(f"Re-running from source URL: {source_url}")
+    metadata = get_video_metadata(source_url)
+    if not metadata:
+        log("[!] Could not fetch metadata for saved source URL")
+        return False
+
+    title = metadata.get("title", "Untitled")
+    video_id = metadata.get("id") or ""
+    transcript = None
+    segments = None
+
+    if force_whisper:
+        log("Phase: transcription — Whisper only (forced)")
+        res = whisper_transcribe(source_url, model_size, log_callback)
+        if res:
+            transcript, segments = res
+    else:
+        log("Phase: transcription — YouTube subtitles (prefer manual)")
+        fetched = fetch_youtube_subtitles(source_url)
+        if fetched:
+            transcript, segments = fetched
+        if not transcript:
+            log("Phase: transcription — Whisper fallback (no usable subtitles)")
+            res = whisper_transcribe(source_url, model_size, log_callback)
+            if res:
+                transcript, segments = res
+
+    if not transcript or not transcript.strip():
+        log(f"[!] No transcript available for: {title}")
+        return False
+
+    chapters_toc = build_chapters_toc_only(metadata)
+    chapter_body = build_chapter_transcript(metadata, segments) if segments else None
+    md = build_markdown(metadata, transcript, chapter_body=chapter_body, chapters_toc=chapters_toc)
+    markdown_path.write_text(md, encoding="utf-8")
+    log(f"Overwrote: {markdown_path}")
+    if video_id:
+        record_processed(video_id, title, markdown_path)
+    return True
+
+
 def health_check():
     """Return list of dicts name, ok, detail for UI."""
     checks = []
