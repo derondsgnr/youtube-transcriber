@@ -257,10 +257,74 @@ def clean_paragraphs_from_text(full):
     return "\n\n".join(paragraphs)
 
 
+def normalize_caption_text(text):
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def normalized_words(text):
+    words = text.split()
+    return [re.sub(r"^[^\w]+|[^\w]+$", "", w).lower() for w in words]
+
+
+def overlap_word_count(left_text, right_text, min_words=2):
+    left_words = left_text.split()
+    right_words = right_text.split()
+    left_norm = normalized_words(left_text)
+    right_norm = normalized_words(right_text)
+    max_n = min(len(left_words), len(right_words), 30)
+    for n in range(max_n, min_words - 1, -1):
+        if left_norm[-n:] == right_norm[:n]:
+            return n
+    return 0
+
+
+def dedupe_rolling_caption_texts(texts):
+    """
+    Collapse rolling-caption overlap like:
+      A
+      A B
+      B C
+    into:
+      A B C
+    """
+    merged = []
+    for raw in texts:
+        text = normalize_caption_text(raw)
+        if not text:
+            continue
+        if not merged:
+            merged.append(text)
+            continue
+
+        last = merged[-1]
+        if text == last:
+            continue
+
+        # Rolling captions often extend the previous cue.
+        if text.startswith(last):
+            merged[-1] = text
+            continue
+
+        # Sometimes the next cue is fully contained in the previous one.
+        if last.startswith(text):
+            continue
+
+        overlap = overlap_word_count(last, text, min_words=2)
+        if overlap:
+            remainder = " ".join(text.split()[overlap:]).strip()
+            if remainder:
+                merged.append(remainder)
+            continue
+
+        merged.append(text)
+
+    return merged
+
+
 def merge_segments_to_paragraphs(segments):
     if not segments:
         return ""
-    texts = [s["text"] for s in segments]
+    texts = dedupe_rolling_caption_texts([s["text"] for s in segments])
     full = " ".join(texts)
     full = re.sub(r"\s+", " ", full).strip()
     return clean_paragraphs_from_text(full)
@@ -285,7 +349,11 @@ def build_chapter_transcript(metadata, segments):
             for seg in segments:
                 if seg["start"] >= t0 and seg["start"] < t1:
                     texts.append(seg["text"])
-        body = clean_paragraphs_from_text(" ".join(texts)) if texts else ""
+        body = (
+            clean_paragraphs_from_text(" ".join(dedupe_rolling_caption_texts(texts)))
+            if texts
+            else ""
+        )
         if body.strip():
             blocks.append(f"## {title}\n\n{body}")
     if not blocks:
