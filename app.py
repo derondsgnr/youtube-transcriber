@@ -985,6 +985,91 @@ with tab2:
                     use_container_width=False,
                     key="download_zip_filtered",
                 )
+                st.divider()
+                st.caption(
+                    "Batch rerun works newest-first on the current list. Use search first to narrow the set."
+                )
+                b1, b2, b3 = st.columns([1, 1, 1.2])
+                with b1:
+                    batch_count = st.number_input(
+                        "Rerun latest",
+                        min_value=1,
+                        max_value=len(filtered),
+                        value=min(3, len(filtered)),
+                        step=1,
+                        key="batch_rerun_count",
+                    )
+                with b2:
+                    batch_model = st.selectbox(
+                        "Model",
+                        ["tiny", "base", "small", "medium"],
+                        index=1,
+                        key="batch_rerun_model",
+                    )
+                with b3:
+                    st.write("")
+                    st.write("")
+                    run_batch_rerun = st.button(
+                        "Rerun latest shown",
+                        type="primary",
+                        use_container_width=True,
+                        key="batch_rerun_btn",
+                    )
+
+                if run_batch_rerun:
+                    targets = filtered[: int(batch_count)]
+                    batch_log = st.empty()
+                    log_lines = []
+                    ok_count = 0
+                    failed_items = []
+
+                    def append_batch_log(msg):
+                        log_lines.append(f"{datetime.now().strftime('%H:%M:%S')}  {msg}")
+                        batch_log.markdown(
+                            '<div class="yt-log">'
+                            + "<br>".join(log_lines[::-1])
+                            + "</div>",
+                            unsafe_allow_html=True,
+                        )
+
+                    with st.status(
+                        f"Rerunning {len(targets)} transcript(s)…",
+                        expanded=True,
+                    ) as batch_status:
+                        for idx, item in enumerate(targets, start=1):
+                            append_batch_log(
+                                f"[{idx}/{len(targets)}] {item['name']}"
+                            )
+
+                            def rerun_cb(msg):
+                                append_batch_log(f"  {msg}")
+
+                            ok_item = transcribe.rerun_markdown_file(
+                                item["path"],
+                                force_whisper=False,
+                                model_size=batch_model,
+                                log_callback=rerun_cb,
+                            )
+                            if ok_item:
+                                ok_count += 1
+                            else:
+                                failed_items.append(item["name"])
+
+                        if failed_items:
+                            batch_status.update(
+                                label=f"Finished with issues · {ok_count} updated, {len(failed_items)} failed",
+                                state="error",
+                            )
+                            st.error(
+                                "Failed: " + ", ".join(failed_items[:5])
+                                + (f" + {len(failed_items) - 5} more" if len(failed_items) > 5 else "")
+                            )
+                        else:
+                            batch_status.update(
+                                label=f"Updated {ok_count} transcript(s)",
+                                state="complete",
+                            )
+                            st.success("Batch rerun complete. Refresh if you want the library order to update.")
 
             for ts in filtered:
                 title = f"{ts['topic']} · {ts['channel']} · {ts['name']}"
